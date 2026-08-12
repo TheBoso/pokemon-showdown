@@ -13,10 +13,18 @@
  *
  * Two design points worth knowing before reading:
  *
- * - The UI is rendered into `|fieldhtml|` and `|controlshtml|`, not into chat.
- *   The client gives a `game-*` room a battle panel with an empty control
- *   surface, so those two channels are ours. Nobody types a command; every
- *   command in the plugin exists to back a button.
+ * - The UI is a chat page (`view-adventure-N`), pushed to each viewer, while
+ *   the room itself is an ordinary chat room used for talking and for the
+ *   event log. Nobody types a command; every command in the plugin exists to
+ *   back a button on that page.
+ *
+ *   Two earlier surfaces were tried and rejected against the real client.
+ *   `|controlshtml|` never reaches the DOM: it is queued into the battle's
+ *   stepQueue, and the battle panel redraws its own replay controls over it as
+ *   soon as that queue is non-empty. `|fieldhtml|` does render, but it shares
+ *   the same queue, so every repaint appends a step that is never freed - an
+ *   unbounded leak over an adventure that repaints on every vote. A page has
+ *   neither problem, and carries no Showdown chrome of its own.
  *
  * - Players are identified by an opaque token, not a userid. Userids are not
  *   stable - a guest who picks a name becomes a different user - and keying a
@@ -28,7 +36,7 @@ import { PRNG } from '../../sim/prng';
 import { RoomGame, RoomGamePlayer } from '../room-game';
 import { getCampaign, type Campaign } from './campaigns';
 import { allAdventures, deleteAdventure, saveAdventure } from './storage';
-import { controls, field } from './render';
+import { panel } from './render';
 import {
 	createAdventureState, createPlayerState, createPokemon,
 	type AdventurePlayerState, type AdventureState,
@@ -55,7 +63,6 @@ export class AdventurePlayer extends RoomGamePlayer<Adventure> {
 
 export class Adventure extends RoomGame<AdventurePlayer> {
 	override readonly gameid = 'adventure' as ID;
-	override room!: GameRoom;
 	/**
 	 * Renaming is safe: state is keyed by token, and `onRename` remaps the
 	 * userid binding. A guest picking a name keeps their party.
@@ -67,7 +74,7 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	prng: PRNG;
 	timeoutTimer: NodeJS.Timeout | null = null;
 
-	constructor(room: GameRoom, state: AdventureState, campaign: Campaign) {
+	constructor(room: Room, state: AdventureState, campaign: Campaign) {
 		super(room);
 		this.state = state;
 		this.campaign = campaign;
@@ -91,19 +98,33 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	 * Creation and restoration
 	 * -------------------------------------------------------------- */
 
+	/**
+	 * Deliberately not prefixed `game-` or `battle-`: the client routes those
+	 * to its battle panel, which brings replay controls and the stepQueue with
+	 * it. A plain roomid gets a plain chat room.
+	 *
+	 * The roomid doubles as the page id, so the adventure in `adventure-3` has
+	 * its panel at `view-adventure-3`.
+	 */
 	static nextRoomid(): RoomID {
 		let num = 1;
-		while (Rooms.get(`game-adventure-${num}` as RoomID)) num++;
-		return `game-adventure-${num}` as RoomID;
+		while (Rooms.get(`adventure-${num}` as RoomID)) num++;
+		return `adventure-${num}` as RoomID;
+	}
+
+	/** The chat page this adventure's UI lives on, without the `view-` prefix. */
+	get pageid(): string {
+		return this.roomid;
 	}
 
 	/** Creates a brand new adventure and drops the host into it. */
 	static create(user: User, campaign: Campaign): Adventure {
 		const roomid = Adventure.nextRoomid();
-		const room = Rooms.createGameRoom(roomid, campaign.name, {
+		const room = Rooms.createChatRoom(roomid, campaign.name, {
 			// Not `isPersonal`: personal rooms deallocate when idle, and an
 			// adventure is allowed to sit quiet without being destroyed.
 			isPrivate: 'hidden',
+			modjoin: null,
 		});
 
 		const state = createAdventureState(roomid, campaign);
@@ -131,7 +152,10 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		}
 
 		try {
-			const room = Rooms.createGameRoom(state.roomid, campaign.name, { isPrivate: 'hidden' });
+			const room = Rooms.createChatRoom(state.roomid, campaign.name, {
+				isPrivate: 'hidden',
+				modjoin: null,
+			});
 			const game = new Adventure(room, state, campaign);
 			room.game = game;
 			game.update();
@@ -364,30 +388,59 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	 * New arrivals get the current state from `onConnect` instead.
 	 */
 	update(): void {
-		this.room.send(`|fieldhtml|${field(this.state, this.campaign)}`);
 		for (const userid in this.room.users) {
-			this.sendControls(this.room.users[userid]);
+			this.sendPanel(this.room.users[userid]);
 		}
 		this.room.update();
 	}
 
-	/** Sends one viewer the control surface appropriate to them. */
-	sendControls(user: User): void {
+	/**
+	 * Repaints one viewer's panel.
+	 *
+	 * The page is rendered per-viewer (the host gets a Start button, a
+	 * spectator gets Join), so this pushes to that user's connections rather
+	 * than broadcasting. Connections that don't have the page open are skipped
+	 * - `openPages` is the client's own record of what it is showing.
+	 */
+	sendPanel(user: User): void {
 		const playerState = this.playerStateFor(user);
-		this.room.sendUser(user, `|controlshtml|${controls(this.state, this.campaign, playerState)}`);
+		const html = panel(this.state, this.campaign, playerState);
+		for (const connection of user.connections) {
+			if (connection.openPages?.has(this.pageid)) {
+				connection.send(`>view-${this.pageid}\n|pagehtml|${html}`);
+			}
+		}
 	}
 
-	/** Repaints just one player's controls, e.g. after they pick a starter. */
+	/** The panel as HTML, for the page handler to render on first open. */
+	panelFor(user: User): string {
+		return panel(this.state, this.campaign, this.playerStateFor(user));
+	}
+
+	/** Repaints just one player's panel, e.g. after they pick a starter. */
 	updatePlayerView(player: AdventurePlayer): void {
 		const user = player.getUser();
-		if (user) this.sendControls(user);
+		if (user) this.sendPanel(user);
 	}
 
-	override onConnect(user: User): void {
-		// Anyone arriving - player or spectator - needs the current board and
-		// their own controls, since neither is replayed from the room log.
-		this.room.sendUser(user, `|fieldhtml|${field(this.state, this.campaign)}`);
-		this.sendControls(user);
+	/** A way back to the panel for anyone who closed it. */
+	sendOpenButton(user: User): void {
+		this.room.sendUser(
+			user,
+			`|uhtml|adventure-open|<div class="infobox" style="text-align:center">` +
+			`<button class="button notifying" name="joinRoom" value="view-${this.pageid}">` +
+			`Open the adventure panel</button></div>`
+		);
+	}
+
+	override onConnect(user: User, connection: Connection): void {
+		// The panel *is* the game, so opening it is not something anyone should
+		// have to go looking for. Going through `/join` rather than pushing the
+		// HTML directly is what registers it in `openPages`, which is what makes
+		// later repaints reach this connection.
+		void Chat.parse(`/join view-${this.pageid}`, this.room, user, connection);
+		// A way back for anyone who closes it.
+		this.sendOpenButton(user);
 	}
 
 	/* -------------------------------------------------------------- *

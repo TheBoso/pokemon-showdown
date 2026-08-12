@@ -60,9 +60,31 @@ if (!process.send) {
 }
 
 export const pages: Chat.PageTable = {
+	/**
+	 * `view-adventure` is the front door; `view-adventure-3` is the live panel
+	 * for the adventure in room `adventure-3`.
+	 *
+	 * Opening the page registers it in `connection.openPages`, which is what
+	 * lets the game push repaints to it without the client asking.
+	 */
 	adventure(query, user, connection) {
-		this.title = 'Adventures';
-		return entryPage(allCampaigns(), openLobbies());
+		const id = toID(query.join('-'));
+		if (!id) {
+			this.title = 'Adventures';
+			return entryPage(allCampaigns(), openLobbies());
+		}
+
+		const room = Rooms.get(`adventure-${id}` as RoomID);
+		const game = room?.game?.gameid === 'adventure' ? room.game as Adventure : null;
+		if (!game) {
+			this.title = 'Adventure';
+			return `<div class="pad"><h2>Adventure not found</h2>` +
+				`<p>It may have ended. <button class="button" name="joinRoom" value="view-adventure">` +
+				`Back to adventures</button></p></div>`;
+		}
+
+		this.title = game.campaign.name;
+		return game.panelFor(user);
 	},
 };
 
@@ -101,7 +123,10 @@ export const commands: Chat.ChatCommands = {
 			}
 
 			const game = Adventure.create(user, campaign);
-			return this.sendReply(`Created a ${campaign.name} adventure: <<${game.state.roomid}>>`);
+			return this.sendReply(
+				`Created a ${campaign.name} adventure: <<${game.state.roomid}>> - ` +
+				`send that room link to whoever you want to play with.`
+			);
 		},
 		newhelp: [`/adventure new [game] - Creates a new adventure room and puts you in it as host.`],
 
@@ -145,10 +170,10 @@ export const commands: Chat.ChatCommands = {
 		},
 		starthelp: [`/adventure start - Starts the adventure. Host only; everyone needs a starter first.`],
 
-		refresh(target, room, user) {
+		refresh(target, room, user, connection) {
 			room = this.requireRoom();
 			const game = this.requireGame(Adventure);
-			game.onConnect(user);
+			game.onConnect(user, connection);
 		},
 		refreshhelp: [`/adventure refresh - Repaints the adventure display.`],
 

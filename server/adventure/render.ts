@@ -98,19 +98,26 @@ function locationName(campaign: Campaign, id: string): string {
 	return campaign.location(id)?.name || id;
 }
 
-function header(campaign: Campaign, subtitle: string): string {
+/**
+ * `subtitleHTML` is already-safe HTML, not raw text - callers escape their own
+ * dynamic parts. Passing it through `Utils.html` here would double-escape any
+ * entity in it, which is exactly how `&middot;` ended up rendering literally.
+ */
+function header(campaign: Campaign, subtitleHTML: string): string {
 	return (
 		Utils.html`<h2 style="margin:4px 0">${campaign.name}</h2>` +
-		Utils.html`<div style="color:#666;font-size:9pt;margin-bottom:8px">${subtitle}</div>`
+		`<div style="color:#666;font-size:9pt;margin-bottom:8px">${subtitleHTML}</div>`
 	);
 }
+
+const DOT = ' &middot; ';
 
 /** The lobby board: who has joined, and what they picked. */
 export function lobbyField(state: AdventureState, campaign: Campaign): string {
 	const players = state.playerOrder.map(token => state.players[token]).filter(Boolean);
 
 	let buf = `<div style="padding:8px;text-align:center">`;
-	buf += header(campaign, `${campaign.manifest.region} &middot; waiting to start`);
+	buf += header(campaign, Utils.escapeHTML(campaign.manifest.region) + DOT + `waiting to start`);
 
 	if (!players.length) {
 		buf += `<p style="color:#888"><em>Nobody has joined yet.</em></p>`;
@@ -145,7 +152,7 @@ export function adventureField(state: AdventureState, campaign: Campaign): strin
 
 	let buf = `<div style="padding:8px">`;
 	buf += `<div style="text-align:center">`;
-	buf += header(campaign, locationName(campaign, state.location));
+	buf += header(campaign, Utils.escapeHTML(locationName(campaign, state.location)));
 	buf += `</div>`;
 
 	buf += `<table style="width:100%">`;
@@ -162,6 +169,30 @@ export function adventureField(state: AdventureState, campaign: Campaign): strin
 
 export function field(state: AdventureState, campaign: Campaign): string {
 	return state.phase === 'lobby' ? lobbyField(state, campaign) : adventureField(state, campaign);
+}
+
+/**
+ * Board and controls as a single block.
+ *
+ * These were originally two channels - `|fieldhtml|` for the board and
+ * `|controlshtml|` for the buttons - which is what `room-battle-bestof.ts`
+ * does. In the rewritten client that does not work: both are queued into the
+ * battle's stepQueue, and once the queue is non-empty the battle panel renders
+ * its own replay controls straight over whatever `controlshtml` set. The
+ * buttons never reach the DOM.
+ *
+ * So everything goes through the field, which the panel leaves alone.
+ */
+export function panel(
+	state: AdventureState, campaign: Campaign, player: AdventurePlayerState | null
+): string {
+	return (
+		`<div style="padding:4px">` +
+		field(state, campaign) +
+		`<hr style="border:none;border-top:1px solid #ccc;margin:8px 0" />` +
+		controls(state, campaign, player) +
+		`</div>`
+	);
 }
 
 /* ------------------------------------------------------------------ *
