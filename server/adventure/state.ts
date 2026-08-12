@@ -15,9 +15,10 @@
 
 import { PRNG } from '../../sim/prng';
 import type { Campaign } from './campaigns';
+import { emptyProgress, type Progress } from './progress';
 
 /** Bumped whenever the on-disk shape changes; see storage.ts for migrations. */
-export const STATE_VERSION = 1;
+export const STATE_VERSION = 2;
 
 export type AdventurePhase =
 	/** Gathering players; everyone picks a starter. */
@@ -89,7 +90,6 @@ export interface AdventurePlayerState {
 	box: PartyPokemon[];
 	bag: { [itemid: string]: number };
 	money: number;
-	badges: string[];
 	/** Drives battler rotation, so the same two people don't fight everything. */
 	battlesFought: number;
 	lastBattleAt: number;
@@ -108,6 +108,12 @@ export interface AdventureState {
 	/** Location id from the campaign's locations.json. */
 	location: string;
 	visited: string[];
+	/**
+	 * Badges, HMs, key items and story flags, held by the group rather than by
+	 * individuals - everyone travels together, so a gate cannot open for one
+	 * player and not another.
+	 */
+	progress: Progress;
 	/** Keyed by token, not userid - see `AdventurePlayerState.token`. */
 	players: { [token: string]: AdventurePlayerState };
 	/** userid -> token, so a returning or renamed user reclaims their party. */
@@ -324,7 +330,6 @@ export function createPlayerState(user: User, campaign: Campaign): AdventurePlay
 		box: [],
 		bag: {},
 		money: campaign.manifest.startMoney,
-		badges: [],
 		battlesFought: 0,
 		lastBattleAt: 0,
 	};
@@ -342,6 +347,7 @@ export function createAdventureState(roomid: RoomID, campaign: Campaign): Advent
 		seed: PRNG.generateSeed(),
 		location: campaign.manifest.startLocation,
 		visited: [campaign.manifest.startLocation],
+		progress: emptyProgress(),
 		players: {},
 		playerTokens: {},
 		playerOrder: [],

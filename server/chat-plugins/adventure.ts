@@ -170,6 +170,28 @@ export const commands: Chat.ChatCommands = {
 		},
 		starthelp: [`/adventure start - Starts the adventure. Host only; everyone needs a starter first.`],
 
+		go: 'vote',
+		travel: 'vote',
+		vote(target, room, user) {
+			room = this.requireRoom();
+			const game = this.requireGame(Adventure);
+			if (!target) throw new Chat.ErrorMessage(`Vote for what? Use the buttons on the adventure panel.`);
+			game.castVote(user, target.trim());
+		},
+		votehelp: [`/adventure vote [destination] - Votes for where the party goes next.`],
+
+		forcevote(target, room, user) {
+			room = this.requireRoom();
+			const game = this.requireGame(Adventure);
+			const token = game.state.playerTokens[user.id];
+			if (game.state.host !== token && !user.can('minigame', null, room)) {
+				throw new Chat.ErrorMessage(`Only the host can close the vote early.`);
+			}
+			if (!game.vote) throw new Chat.ErrorMessage(`There is no vote open.`);
+			game.vote.resolve();
+		},
+		forcevotehelp: [`/adventure forcevote - Closes the current vote immediately. Host or staff only.`],
+
 		refresh(target, room, user, connection) {
 			room = this.requireRoom();
 			const game = this.requireGame(Adventure);

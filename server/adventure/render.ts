@@ -23,6 +23,8 @@
 
 import { Utils } from '../../lib';
 import type { Campaign } from './campaigns';
+import { describeRequirement } from './progress';
+import type { Vote } from './vote';
 import {
 	displayName, isFainted,
 	type AdventurePlayerState, type AdventureState, type PartyPokemon,
@@ -155,12 +157,20 @@ export function adventureField(state: AdventureState, campaign: Campaign): strin
 	buf += header(campaign, Utils.escapeHTML(locationName(campaign, state.location)));
 	buf += `</div>`;
 
+	const { badges, hms, keyItems } = state.progress;
+	const earned: string[] = [];
+	if (badges.length) earned.push(`${badges.length}/8 badges`);
+	for (const hm of hms) earned.push(describeRequirement(`hm:${hm}`));
+	for (const item of keyItems) earned.push(describeRequirement(`item:${item}`));
+	if (earned.length) {
+		buf += `<div style="text-align:center;color:#666;font-size:9pt;margin-bottom:6px">` +
+			Utils.escapeHTML(earned.join(' · ')) + `</div>`;
+	}
+
 	buf += `<table style="width:100%">`;
 	for (const player of players) {
-		const badges = player.badges.length ?
-			` <small style="color:#666">${player.badges.length} badge(s)</small>` : '';
 		buf += Utils.html`<tr><td style="vertical-align:top;padding:4px 12px 4px 0;white-space:nowrap">` +
-			Utils.html`<strong>${player.name}</strong>` + badges + `</td>`;
+			Utils.html`<strong>${player.name}</strong></td>`;
 		buf += `<td style="vertical-align:top;padding:4px 0">${partyView(player)}</td></tr>`;
 	}
 	buf += `</table></div>`;
@@ -184,13 +194,13 @@ export function field(state: AdventureState, campaign: Campaign): string {
  * So everything goes through the field, which the panel leaves alone.
  */
 export function panel(
-	state: AdventureState, campaign: Campaign, player: AdventurePlayerState | null
+	state: AdventureState, campaign: Campaign, player: AdventurePlayerState | null, vote: Vote | null
 ): string {
 	return (
 		`<div style="padding:4px">` +
 		field(state, campaign) +
 		`<hr style="border:none;border-top:1px solid #ccc;margin:8px 0" />` +
-		controls(state, campaign, player) +
+		controls(state, campaign, player, vote) +
 		`</div>`
 	);
 }
@@ -222,13 +232,59 @@ function starterControls(roomid: RoomID, campaign: Campaign): string {
 }
 
 /**
+ * The travel ballot.
+ *
+ * Locked destinations render as disabled buttons with the reason underneath,
+ * rather than being hidden: a road you can see but cannot take yet is how the
+ * map teaches itself, and it makes HMs feel like keys instead of chores.
+ */
+function voteControls(state: AdventureState, vote: Vote, voterToken: string | null): string {
+	const counts = vote.counts();
+	const mine = voterToken ? vote.votedFor(voterToken) : undefined;
+	const seconds = vote.secondsLeft();
+
+	let buf = `<div style="padding:6px">`;
+	buf += `<p style="margin:4px;text-align:center"><strong>${Utils.escapeHTML(vote.title)}</strong> `;
+	buf += `<small style="color:#666">${seconds}s left</small></p>`;
+	buf += `<table style="margin:0 auto">`;
+
+	for (const option of vote.options) {
+		const votes = counts[option.id] || 0;
+		const tally = votes ?
+			` <small style="color:#666">${'&#9679;'.repeat(Math.min(votes, 6))} ${votes}</small>` : '';
+		const chosen = mine === option.id;
+
+		buf += `<tr><td style="padding:3px 6px">`;
+		if (option.locked) {
+			buf += `<button class="button" disabled>${Utils.escapeHTML(option.label)}</button>`;
+		} else {
+			const label = (chosen ? `&#10003; ` : ``) + Utils.escapeHTML(option.label);
+			buf += button(state.roomid, `/adventure vote ${option.id}`, label, { notifying: chosen });
+		}
+		buf += tally;
+		buf += `</td><td style="padding:3px 6px;color:#888;font-size:9pt">`;
+		buf += option.locked ?
+			`<span style="color:#b06">${Utils.escapeHTML(option.locked)}</span>` :
+			Utils.escapeHTML(option.detail || '');
+		buf += `</td></tr>`;
+	}
+
+	buf += `</table>`;
+	if (!voterToken) {
+		buf += `<p style="margin:4px;text-align:center;color:#888;font-size:9pt">Spectators can't vote.</p>`;
+	}
+	buf += `</div>`;
+	return buf;
+}
+
+/**
  * Controls for one viewer.
  *
  * `player` is null for anyone watching who hasn't joined - they get a Join
  * button and nothing else.
  */
 export function controls(
-	state: AdventureState, campaign: Campaign, player: AdventurePlayerState | null
+	state: AdventureState, campaign: Campaign, player: AdventurePlayerState | null, vote: Vote | null
 ): string {
 	const roomid = state.roomid;
 
@@ -275,13 +331,17 @@ export function controls(
 		);
 	}
 
-	let buf = `<div style="padding:8px">`;
+	let buf = ``;
+	if (vote) {
+		buf += voteControls(state, vote, player.token);
+		buf += `<hr style="border:none;border-top:1px solid #ddd;margin:4px 0" />`;
+	}
+
+	buf += `<div style="padding:8px">`;
 	buf += `<div style="text-align:center;color:#666;font-size:9pt;margin-bottom:6px">` +
 		`Your party (${player.party.length}/${campaign.manifest.maxPartySize})` +
 		Utils.html` &middot; $${player.money}</div>`;
 	buf += `<div style="text-align:center">${partyView(player)}</div>`;
-	buf += `<div style="text-align:center;margin-top:8px;color:#888;font-size:9pt">` +
-		`Movement and voting arrive in the next milestone.</div>`;
 	buf += `</div>`;
 	return buf;
 }

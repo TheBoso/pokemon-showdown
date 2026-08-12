@@ -24,14 +24,28 @@ let saved: SaveFile = { version: STATE_VERSION, adventures: {} };
 /**
  * Brings an older on-disk adventure up to the current shape.
  *
- * There is nothing to migrate yet - v1 is the first version - but adventures
- * are long-lived enough that the seam needs to exist before it is needed
- * rather than after.
+ * Adventures run for hours and outlive deploys, so an upgrade that silently
+ * binned everyone's save would be the worst kind of bug. Each step migrates
+ * one version forward and falls through to the next.
  */
 function migrate(state: AdventureState): AdventureState | null {
-	if (state.version === STATE_VERSION) return state;
-	if (state.version > STATE_VERSION) return null; // from a newer server; leave it alone
-	return null;
+	// From a newer server than this one; leave it alone rather than mangle it.
+	if (state.version > STATE_VERSION) return null;
+
+	if (state.version === 1) {
+		// v2 moved badges from each player onto shared group progress, and
+		// added HMs, key items and story flags alongside them.
+		const anyState = state as AnyObject;
+		const badges = new Set<string>();
+		for (const player of Object.values(anyState.players || {})) {
+			for (const badge of player.badges || []) badges.add(badge);
+			delete player.badges;
+		}
+		anyState.progress = { badges: [...badges], hms: [], keyItems: [], flags: [] };
+		state.version = 2;
+	}
+
+	return state.version === STATE_VERSION ? state : null;
 }
 
 function load(): void {

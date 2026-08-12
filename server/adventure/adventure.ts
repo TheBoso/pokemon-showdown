@@ -37,13 +37,21 @@ import { RoomGame, RoomGamePlayer } from '../room-game';
 import { getCampaign, type Campaign } from './campaigns';
 import { allAdventures, deleteAdventure, saveAdventure } from './storage';
 import { panel } from './render';
+import { describeAll, meetsAll, unmet } from './progress';
+import { Vote, type VoteOption, type VoteResult } from './vote';
 import {
-	createAdventureState, createPlayerState, createPokemon,
+	createAdventureState, createPlayerState, createPokemon, healParty,
 	type AdventurePlayerState, type AdventureState,
 } from './state';
 
 /** How long an untouched lobby sticks around before it cleans itself up. */
 const LOBBY_TIMEOUT = 60 * 60 * 1000;
+
+/** Long enough to talk it over, short enough that nobody wanders off. */
+const TRAVEL_VOTE_MS = 45 * 1000;
+
+/** Synthetic vote option id for healing rather than travelling. */
+const HEAL_OPTION = 'heal';
 
 /**
  * A player in the adventure.
@@ -73,6 +81,8 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	campaign: Campaign;
 	prng: PRNG;
 	timeoutTimer: NodeJS.Timeout | null = null;
+	/** The open vote, if any. Transient - never persisted. */
+	vote: Vote | null = null;
 
 	constructor(room: Room, state: AdventureState, campaign: Campaign) {
 		super(room);
@@ -159,6 +169,11 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 			const game = new Adventure(room, state, campaign);
 			room.game = game;
 			game.update();
+			// A vote is transient, so a restored adventure has none. Reopen one
+			// rather than leaving the party stranded with no way to move.
+			if (!['lobby', 'ended'].includes(state.phase)) {
+				process.nextTick(() => game.openTravelVote());
+			}
 			return game;
 		} catch (err: any) {
 			Monitor.crashlog(err, 'Adventure restore', { roomid: state.roomid });
@@ -273,6 +288,7 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		}
 
 		const token = player.token;
+		this.vote?.withdraw(token);
 		this.removePlayer(player);
 		delete this.state.players[token];
 		delete this.state.playerTokens[user.id];
@@ -360,11 +376,166 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		this.room.add(Utils.html`|html|<div class="infobox">You set out from ${where}.</div>`);
 
 		this.save();
+		this.openTravelVote();
+	}
+
+	/* -------------------------------------------------------------- *
+	 * Travel
+	 * -------------------------------------------------------------- */
+
+	get here() {
+		return this.campaign.location(this.state.location);
+	}
+
+	/**
+	 * Builds the ballot for the current location: every exit, plus healing if
+	 * there is a Pokemon Centre here.
+	 *
+	 * Locked exits stay on the ballot rather than being hidden. Showing a road
+	 * you cannot take yet, and why, is how a player learns the map; hiding it
+	 * just makes the world feel arbitrarily small.
+	 */
+	travelOptions(): VoteOption[] {
+		const options: VoteOption[] = [];
+		const here = this.here;
+
+		if (here?.pokecenter) {
+			const hurt = this.playersNeedingHealing();
+			options.push({
+				id: HEAL_OPTION,
+				label: `Pokemon Centre`,
+				detail: hurt ? `heal ${hurt} part${hurt === 1 ? 'y' : 'ies'}` : `everyone is already healthy`,
+			});
+		}
+
+		for (const exit of this.campaign.exits(this.state.location)) {
+			const missing = unmet(this.state.progress, exit.requires);
+			options.push({
+				id: exit.id,
+				label: exit.location.name,
+				detail: this.state.visited.includes(exit.id) ? undefined : 'somewhere new',
+				locked: missing.length ? `needs ${describeAll(missing)}` : undefined,
+			});
+		}
+		return options;
+	}
+
+	playersNeedingHealing(): number {
+		return this.state.playerOrder.filter(token => {
+			const player = this.state.players[token];
+			return player?.party.some(pokemon => pokemon.hp < pokemon.maxhp || pokemon.status);
+		}).length;
+	}
+
+	openTravelVote(): void {
+		if (this.ended) return;
+		this.vote?.destroy();
+
+		const options = this.travelOptions();
+		if (!options.some(option => !option.locked)) {
+			// Every road out is shut. Possible if a campaign gates badly; say so
+			// rather than opening a vote nobody can answer.
+			this.vote = null;
+			this.room.add(
+				`|html|<div class="broadcast-red">There is nowhere to go from here that the party can reach.</div>`
+			).update();
+			this.update();
+			return;
+		}
+
+		this.vote = new Vote({
+			title: `Where next?`,
+			options,
+			durationMs: TRAVEL_VOTE_MS,
+			onTick: () => this.update(),
+			onResolve: result => this.onTravelVote(result),
+			pick: items => this.prng.sample(items),
+		});
 		this.update();
+	}
+
+	castVote(user: User, optionId: string): void {
+		const player = this.playerTable[user.id];
+		if (!player) throw new Chat.ErrorMessage(`You are not in this adventure.`);
+		if (!this.vote) throw new Chat.ErrorMessage(`There is nothing to vote on right now.`);
+
+		const option = this.vote.options.find(entry => entry.id === toID(optionId) || entry.id === optionId);
+		if (!option) throw new Chat.ErrorMessage(`That isn't one of the options.`);
+		if (option.locked) throw new Chat.ErrorMessage(`${option.label} is closed: ${option.locked}.`);
+
+		if (!this.vote.cast(player.token, option.id)) {
+			throw new Chat.ErrorMessage(`Your vote could not be recorded.`);
+		}
+
+		this.update();
+		this.vote.maybeResolveEarly(this.state.playerOrder.length);
+	}
+
+	private onTravelVote(result: VoteResult): void {
+		this.vote = null;
+		if (this.ended) return;
+
+		if (result.tied) {
+			this.room.add(Utils.html`|html|<div class="infobox">The vote tied - ${result.winner.label} it is.</div>`);
+		}
+
+		if (result.winner.id === HEAL_OPTION) {
+			this.healEveryone();
+			return;
+		}
+		this.travelTo(result.winner.id);
+	}
+
+	healEveryone(): void {
+		for (const token of this.state.playerOrder) {
+			const player = this.state.players[token];
+			if (player) healParty(player, this.campaign.mod);
+		}
+		this.state.phase = 'pokecenter';
+		this.room.add(
+			`|html|<div class="broadcast-green">Everyone's Pokemon were restored to full health.</div>`
+		);
+		this.save();
+		this.openTravelVote();
+	}
+
+	travelTo(locationId: string): void {
+		const destination = this.campaign.location(locationId);
+		if (!destination) {
+			Monitor.error(`Adventure ${this.roomid} tried to travel to unknown location "${locationId}"`);
+			this.openTravelVote();
+			return;
+		}
+
+		// Re-check on arrival: a vote can outlive the state it was opened against.
+		const exit = this.campaign.exits(this.state.location).find(entry => entry.id === locationId);
+		if (exit && !meetsAll(this.state.progress, exit.requires)) {
+			this.room.add(
+				Utils.html`|html|<div class="broadcast-red">The way to ${destination.name} is closed.</div>`
+			).update();
+			this.openTravelVote();
+			return;
+		}
+
+		const firstVisit = !this.state.visited.includes(locationId);
+		this.state.location = locationId;
+		if (firstVisit) this.state.visited.push(locationId);
+		this.state.phase = ['town', 'city'].includes(destination.kind) ? 'overworld' : 'route';
+		this.state.gauntletIndex = 0;
+
+		this.room.add(
+			Utils.html`|html|<div class="infobox">The party travels to <strong>${destination.name}</strong>.` +
+			(firstVisit ? ` <small>(somewhere new)</small>` : ``) + `</div>`
+		);
+
+		this.save();
+		this.openTravelVote();
 	}
 
 	end(user: User | null, reason = ''): void {
 		if (this.ended) return;
+		this.vote?.destroy();
+		this.vote = null;
 		this.state.phase = 'ended';
 
 		const by = user ? Utils.html` by ${user.name}` : '';
@@ -404,7 +575,7 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	 */
 	sendPanel(user: User): void {
 		const playerState = this.playerStateFor(user);
-		const html = panel(this.state, this.campaign, playerState);
+		const html = panel(this.state, this.campaign, playerState, this.vote);
 		for (const connection of user.connections) {
 			if (connection.openPages?.has(this.pageid)) {
 				connection.send(`>view-${this.pageid}\n|pagehtml|${html}`);
@@ -414,7 +585,7 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 
 	/** The panel as HTML, for the page handler to render on first open. */
 	panelFor(user: User): string {
-		return panel(this.state, this.campaign, this.playerStateFor(user));
+		return panel(this.state, this.campaign, this.playerStateFor(user), this.vote);
 	}
 
 	/** Repaints just one player's panel, e.g. after they pick a starter. */
@@ -468,6 +639,8 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	override destroy(): void {
 		if (this.timeoutTimer) clearTimeout(this.timeoutTimer);
 		this.timeoutTimer = null;
+		this.vote?.destroy();
+		this.vote = null;
 		const room = this.room;
 		super.destroy();
 		room?.destroy();
