@@ -554,7 +554,6 @@
 		"name": "Pokemon League",
 		"kind": "building",
 		"connections": ["victoryroad"],
-		"trainers": ["elite_sidney", "elite_phoebe", "elite_glacia", "elite_drake", "champion_wallace"],
-		"notes": "The gauntlet with no Pokemon Centre between fights."
+		"notes": "The gauntlet with no Pokemon Centre between fights. Its trainers come from trainers.json like everywhere else - the Elite Four each have their own map in the ROM, collapsed to this one location."
 	}
 }

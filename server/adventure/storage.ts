@@ -37,7 +37,8 @@ function migrate(state: AdventureState): AdventureState | null {
 		// added HMs, key items and story flags alongside them.
 		const anyState = state as AnyObject;
 		const badges = new Set<string>();
-		for (const player of Object.values(anyState.players || {})) {
+		const players: AnyObject[] = Object.values(anyState.players || {});
+		for (const player of players) {
 			for (const badge of player.badges || []) badges.add(badge);
 			delete player.badges;
 		}

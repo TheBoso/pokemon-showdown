@@ -235,14 +235,33 @@ export function validateLocations(locations: LocationMap, startLocation: string)
 	return problems;
 }
 
+/** One Pokemon on a trainer's team, as a Showdown set. */
+export interface TrainerMon {
+	species: string;
+	level: number;
+	ivs: StatsTable;
+	evs: StatsTable;
+	item: string;
+	ability: string;
+	nature: string;
+	moves: string[];
+}
+
 export interface TrainerData {
 	name: string;
 	trainerClass: string;
-	/** Packed or unpacked Showdown sets. */
-	team: AnyObject[];
-	prize?: number;
+	team: TrainerMon[];
+	doubleBattle?: boolean;
 	/** Emerald's AI script flags, for faithful behaviour later. */
 	ai?: string[];
+	/** Bag items the AI uses mid-battle. Recorded, not yet simulated. */
+	items?: string[];
+}
+
+/** The shape of the generated trainers.json. */
+export interface TrainerFile {
+	trainers: { [id: string]: TrainerData };
+	byLocation: { [locationId: string]: string[] };
 }
 
 export interface EncounterEntry {
@@ -416,12 +435,31 @@ export class Campaign {
 		return validateLocations(locations, this.manifest.startLocation);
 	}
 
+	private trainerFile(): TrainerFile | null {
+		return this.load<TrainerFile>('trainers');
+	}
+
 	trainers(): { [id: string]: TrainerData } | null {
-		return this.load('trainers');
+		return this.trainerFile()?.trainers || null;
 	}
 
 	trainer(id: string): TrainerData | null {
 		return this.trainers()?.[id] || null;
+	}
+
+	/**
+	 * The trainers standing at a location, in the order the ROM lists them.
+	 *
+	 * A location's own `trainers` array overrides the generated index, so a
+	 * campaign can hand-order a gauntlet where the ROM's order reads badly.
+	 */
+	trainersAt(locationId: string): { id: string, trainer: TrainerData }[] {
+		const override = this.location(locationId)?.trainers;
+		const ids = override || this.trainerFile()?.byLocation?.[locationId] || [];
+		const trainers = this.trainers() || {};
+		return ids
+			.filter(id => trainers[id])
+			.map(id => ({ id, trainer: trainers[id] }));
 	}
 
 	encounters(): { [table: string]: EncounterTable } | null {
