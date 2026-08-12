@@ -1,0 +1,28 @@
+{
+	"id": "emerald",
+	"name": "Pokémon Emerald",
+	"region": "Hoenn",
+	"generation": 3,
+	"mod": "gen3",
+
+	"startLocation": "littleroot",
+	"startMoney": 3000,
+	"starterLevel": 5,
+
+	"starters": [
+		{ "species": "Treecko", "type": "Grass", "blurb": "Fast and frail. Overgrow." },
+		{ "species": "Torchic", "type": "Fire", "blurb": "Hits hard, takes hits badly. Blaze." },
+		{ "species": "Mudkip", "type": "Water", "blurb": "Bulky and blunt. Torrent." }
+	],
+
+	"maxPartySize": 6,
+	"maxMoves": 4,
+	"shinyRate": 8192,
+
+	"data": {
+		"locations": "locations.json",
+		"trainers": "trainers.json",
+		"encounters": "encounters.json",
+		"speciesExtra": "species-extra.json"
+	}
+}
