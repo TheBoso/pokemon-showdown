@@ -73,7 +73,16 @@ export interface PartyPokemon {
 }
 
 export interface AdventurePlayerState {
-	id: ID;
+	/**
+	 * Stable identity for this player, independent of their userid.
+	 *
+	 * Userids are not stable: a guest who picks a name becomes a different
+	 * user, and keying a party to a userid would orphan it mid-run. The token
+	 * is assigned once at join and never changes, so renaming is free.
+	 */
+	token: string;
+	/** Current userid. Updated on rename; may be a guest id. */
+	userid: ID;
 	name: string;
 	party: PartyPokemon[];
 	/** Overflow beyond the party limit. The PC, effectively. */
@@ -92,16 +101,19 @@ export interface AdventureState {
 	/** Campaign id, e.g. 'emerald'. Everything game-specific derives from this. */
 	campaign: string;
 	phase: AdventurePhase;
-	/** Who created it; can start it and force votes. */
-	host: ID;
+	/** Token of whoever created it; can start it and force votes. */
+	host: string;
 	/** Every roll comes from here, so an adventure is reproducible. */
 	seed: PRNGSeed;
 	/** Location id from the campaign's locations.json. */
 	location: string;
 	visited: string[];
-	players: { [userid: string]: AdventurePlayerState };
-	/** Join order; also the base order for battler rotation. */
-	playerOrder: ID[];
+	/** Keyed by token, not userid - see `AdventurePlayerState.token`. */
+	players: { [token: string]: AdventurePlayerState };
+	/** userid -> token, so a returning or renamed user reclaims their party. */
+	playerTokens: { [userid: string]: string };
+	/** Join order, as tokens; also the base order for battler rotation. */
+	playerOrder: string[];
 	/** Index into the current route's trainer list. */
 	gauntletIndex: number;
 	defeatedTrainers: string[];
@@ -298,9 +310,15 @@ export function displayName(pokemon: PartyPokemon): string {
  * Construction
  * ------------------------------------------------------------------ */
 
+/** Opaque, stable, and not derived from the userid - that is the whole point. */
+export function generateToken(): string {
+	return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export function createPlayerState(user: User, campaign: Campaign): AdventurePlayerState {
 	return {
-		id: user.id,
+		token: generateToken(),
+		userid: user.id,
 		name: user.name,
 		party: [],
 		box: [],
@@ -312,18 +330,20 @@ export function createPlayerState(user: User, campaign: Campaign): AdventurePlay
 	};
 }
 
-export function createAdventureState(roomid: RoomID, host: User, campaign: Campaign): AdventureState {
+export function createAdventureState(roomid: RoomID, campaign: Campaign): AdventureState {
 	const now = Date.now();
 	return {
 		version: STATE_VERSION,
 		roomid,
 		campaign: campaign.id,
 		phase: 'lobby',
-		host: host.id,
+		// Set once the host joins and has a token.
+		host: '',
 		seed: PRNG.generateSeed(),
 		location: campaign.manifest.startLocation,
 		visited: [campaign.manifest.startLocation],
 		players: {},
+		playerTokens: {},
 		playerOrder: [],
 		gauntletIndex: 0,
 		defeatedTrainers: [],

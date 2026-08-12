@@ -11,9 +11,16 @@
  * adding another game means adding a folder under `data/campaigns/`, not
  * touching this file.
  *
- * Milestone 1 covers the lobby: creating an adventure, joining it, picking a
- * starter, and starting. Movement, voting, battles and catching build on top
- * of the state layer this establishes.
+ * Two design points worth knowing before reading:
+ *
+ * - The UI is rendered into `|fieldhtml|` and `|controlshtml|`, not into chat.
+ *   The client gives a `game-*` room a battle panel with an empty control
+ *   surface, so those two channels are ours. Nobody types a command; every
+ *   command in the plugin exists to back a button.
+ *
+ * - Players are identified by an opaque token, not a userid. Userids are not
+ *   stable - a guest who picks a name becomes a different user - and keying a
+ *   party to one would orphan it mid-run. This is what lets guests play.
  */
 
 import { Utils } from '../../lib';
@@ -21,7 +28,7 @@ import { PRNG } from '../../sim/prng';
 import { RoomGame, RoomGamePlayer } from '../room-game';
 import { getCampaign, type Campaign } from './campaigns';
 import { allAdventures, deleteAdventure, saveAdventure } from './storage';
-import { adventureView, lobbyView, selfView, starterPicker } from './render';
+import { controls, field } from './render';
 import {
 	createAdventureState, createPlayerState, createPokemon,
 	type AdventurePlayerState, type AdventureState,
@@ -34,21 +41,26 @@ const LOBBY_TIMEOUT = 60 * 60 * 1000;
  * A player in the adventure.
  *
  * Deliberately thin: the durable per-player data lives in
- * `AdventurePlayerState` inside `AdventureState`, because that is what has to
- * survive a server restart. This class is just the binding between a `User`
- * and that state.
+ * `AdventurePlayerState`, keyed by token. This class is only the binding
+ * between a currently-connected `User` and that state.
  */
 export class AdventurePlayer extends RoomGamePlayer<Adventure> {
-	get state(): AdventurePlayerState {
-		return this.game.state.players[this.id];
+	/** Assigned by `Adventure#addPlayer` immediately after construction. */
+	token = '';
+
+	get state(): AdventurePlayerState | undefined {
+		return this.game.state.players[this.token];
 	}
 }
 
 export class Adventure extends RoomGame<AdventurePlayer> {
 	override readonly gameid = 'adventure' as ID;
 	override room!: GameRoom;
-	/** Renames would desync `state.players`, which is keyed by userid. */
-	override allowRenames = false;
+	/**
+	 * Renaming is safe: state is keyed by token, and `onRename` remaps the
+	 * userid binding. A guest picking a name keeps their party.
+	 */
+	override allowRenames = true;
 
 	state: AdventureState;
 	campaign: Campaign;
@@ -63,9 +75,13 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		this.prng = new PRNG(state.seed);
 
 		// Restored adventures already have players; re-bind anyone who is online.
-		for (const id of state.playerOrder) {
-			const user = Users.getExact(id);
-			if (user) super.addPlayer(user);
+		for (const token of state.playerOrder) {
+			const playerState = state.players[token];
+			if (!playerState) continue;
+			const user = Users.getExact(playerState.userid);
+			if (!user) continue;
+			const player = super.addPlayer(user);
+			if (player) player.token = token;
 		}
 
 		this.pokeTimeout();
@@ -86,15 +102,16 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		const roomid = Adventure.nextRoomid();
 		const room = Rooms.createGameRoom(roomid, campaign.name, {
 			// Not `isPersonal`: personal rooms deallocate when idle, and an
-			// adventure is allowed to sit quiet for a while without being destroyed.
+			// adventure is allowed to sit quiet without being destroyed.
 			isPrivate: 'hidden',
 		});
 
-		const state = createAdventureState(roomid, user, campaign);
+		const state = createAdventureState(roomid, campaign);
 		const game = new Adventure(room, state, campaign);
 		room.game = game;
 
-		game.addPlayer(user);
+		const player = game.addPlayer(user);
+		if (player) state.host = player.token;
 		user.joinRoom(room);
 		game.save();
 		game.update();
@@ -117,7 +134,6 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 			const room = Rooms.createGameRoom(state.roomid, campaign.name, { isPrivate: 'hidden' });
 			const game = new Adventure(room, state, campaign);
 			room.game = game;
-			room.add(`|html|<div class="broadcast-blue">This adventure was restored after a server restart.</div>`);
 			game.update();
 			return game;
 		} catch (err: any) {
@@ -138,20 +154,73 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	}
 
 	/* -------------------------------------------------------------- *
-	 * Joining and leaving
+	 * Identity
 	 * -------------------------------------------------------------- */
+
+	/** The player state for a user, if they're in this adventure. */
+	playerStateFor(user: User): AdventurePlayerState | null {
+		const token = this.state.playerTokens[user.id];
+		return (token && this.state.players[token]) || null;
+	}
 
 	override addPlayer(user: User): AdventurePlayer | null {
 		const player = super.addPlayer(user);
 		if (!player) return null;
 
-		if (!this.state.players[user.id]) {
-			this.state.players[user.id] = createPlayerState(user, this.campaign);
-			this.state.playerOrder.push(user.id);
+		// Reclaim an existing slot where possible, so rejoining keeps the party.
+		let token = this.state.playerTokens[user.id];
+		if (!token || !this.state.players[token]) {
+			const playerState = createPlayerState(user, this.campaign);
+			token = playerState.token;
+			this.state.players[token] = playerState;
+			this.state.playerOrder.push(token);
+		} else {
+			this.state.players[token].userid = user.id;
+			this.state.players[token].name = user.name;
 		}
+
+		this.state.playerTokens[user.id] = token;
+		player.token = token;
 		this.room.auth.set(user.id, Users.PLAYER_SYMBOL);
 		return player;
 	}
+
+	/**
+	 * Keeps the userid binding pointing at the right token when someone
+	 * renames - most often a guest choosing a name mid-adventure.
+	 */
+	override onRename(user: User, oldUserid: ID, isJoining: boolean, isForceRenamed: boolean): void {
+		const player = this.playerTable[oldUserid];
+		if (!player) {
+			super.onRename(user, oldUserid, isJoining, isForceRenamed);
+			return;
+		}
+
+		// Re-key the player table ourselves rather than deferring to the base
+		// class, which skips the rename when the user ends up unnamed. Skipping
+		// would leave `playerTable` on the old userid while `playerTokens` moved
+		// to the new one, and the two must not disagree.
+		this.renamePlayer(user, oldUserid);
+
+		const token = player.token;
+		if (this.state.playerTokens[oldUserid] === token) {
+			delete this.state.playerTokens[oldUserid];
+		}
+		this.state.playerTokens[user.id] = token;
+
+		const playerState = this.state.players[token];
+		if (playerState) {
+			playerState.userid = user.id;
+			playerState.name = user.name;
+		}
+
+		this.save();
+		this.update();
+	}
+
+	/* -------------------------------------------------------------- *
+	 * Joining and leaving
+	 * -------------------------------------------------------------- */
 
 	override joinGame(user: User): void {
 		if (this.state.phase !== 'lobby') {
@@ -163,6 +232,7 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 
 		const player = this.addPlayer(user);
 		if (!player) throw new Chat.ErrorMessage(`You could not be added to this adventure.`);
+		if (!this.state.host) this.state.host = player.token;
 
 		this.room.add(Utils.html`|c|~|${user.name} joined the adventure.`);
 		this.save();
@@ -174,22 +244,24 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		if (!player) throw new Chat.ErrorMessage(`You are not in this adventure.`);
 		if (this.state.phase !== 'lobby') {
 			throw new Chat.ErrorMessage(
-				`You can't leave an adventure once it has started - use /adventure end to stop it.`
+				`You can't leave an adventure once it has started - use the End button to stop it.`
 			);
 		}
 
+		const token = player.token;
 		this.removePlayer(player);
-		delete this.state.players[user.id];
-		this.state.playerOrder = this.state.playerOrder.filter(id => id !== user.id);
+		delete this.state.players[token];
+		delete this.state.playerTokens[user.id];
+		this.state.playerOrder = this.state.playerOrder.filter(entry => entry !== token);
 		this.room.auth.set(user.id, '+');
 
 		this.room.add(Utils.html`|c|~|${user.name} left the adventure.`);
 
 		// The host leaving hands the adventure to whoever is next in line.
-		if (this.state.host === user.id && this.state.playerOrder.length) {
-			this.state.host = this.state.playerOrder[0];
+		if (this.state.host === token) {
+			this.state.host = this.state.playerOrder[0] || '';
 			const newHost = this.state.players[this.state.host];
-			this.room.add(Utils.html`|c|~|${newHost.name} is now the host.`);
+			if (newHost) this.room.add(Utils.html`|c|~|${newHost.name} is now the host.`);
 		}
 
 		this.save();
@@ -202,7 +274,7 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 
 	pickStarter(user: User, speciesid: string): void {
 		const player = this.playerTable[user.id];
-		if (!player) throw new Chat.ErrorMessage(`You are not in this adventure - use /adventure join first.`);
+		if (!player) throw new Chat.ErrorMessage(`You are not in this adventure.`);
 		if (this.state.phase !== 'lobby') {
 			throw new Chat.ErrorMessage(`Starters can only be chosen before the adventure starts.`);
 		}
@@ -215,6 +287,7 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		}
 
 		const playerState = player.state;
+		if (!playerState) throw new Chat.ErrorMessage(`Your adventure data is missing.`);
 		if (playerState.party.length) {
 			throw new Chat.ErrorMessage(`You have already chosen ${playerState.party[0].species}.`);
 		}
@@ -224,7 +297,7 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 			species: starter.species,
 			level: this.campaign.manifest.starterLevel,
 			prng: this.prng,
-			trainer: user.id,
+			trainer: playerState.token as ID,
 			location: this.state.location,
 		}));
 
@@ -238,19 +311,20 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	}
 
 	start(user: User): void {
-		if (this.state.host !== user.id) {
+		const player = this.playerTable[user.id];
+		if (!player || player.token !== this.state.host) {
 			throw new Chat.ErrorMessage(`Only the host can start the adventure.`);
 		}
 		if (this.state.phase !== 'lobby') {
 			throw new Chat.ErrorMessage(`This adventure has already started.`);
 		}
 
-		const players = this.state.playerOrder.map(id => this.state.players[id]);
+		const players = this.state.playerOrder.map(token => this.state.players[token]).filter(Boolean);
 		if (!players.length) throw new Chat.ErrorMessage(`Nobody has joined the adventure yet.`);
 
-		const waiting = players.filter(player => !player.party.length);
+		const waiting = players.filter(entry => !entry.party.length);
 		if (waiting.length) {
-			const names = waiting.map(player => player.name).join(', ');
+			const names = waiting.map(entry => entry.name).join(', ');
 			throw new Chat.ErrorMessage(`Still waiting on a starter from: ${names}.`);
 		}
 
@@ -259,10 +333,7 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		const where = start?.name || this.state.location;
 
 		this.room.add(`|html|<div class="broadcast-green"><strong>The adventure has begun!</strong></div>`);
-		this.room.add(
-			Utils.html`|html|<div class="infobox">You set out from ${where}. ` +
-			`<small style="color:#666">Movement and voting arrive in the next milestone.</small></div>`
-		);
+		this.room.add(Utils.html`|html|<div class="infobox">You set out from ${where}.</div>`);
 
 		this.save();
 		this.update();
@@ -285,55 +356,38 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	 * Display
 	 * -------------------------------------------------------------- */
 
-	/** Re-renders the shared panel for everyone, plus each player's own panel. */
+	/**
+	 * Pushes the board to everyone and controls to each viewer individually.
+	 *
+	 * These go out with `send`/`sendUser` rather than `add`, so repainting the
+	 * UI hundreds of times over a long adventure doesn't bloat the room log.
+	 * New arrivals get the current state from `onConnect` instead.
+	 */
 	update(): void {
-		const shared = this.state.phase === 'lobby' ?
-			lobbyView(this.state, this.campaign, false) :
-			adventureView(this.state, this.campaign);
-		this.room.add(`|uhtml|adventure|${shared}`);
-
-		// The host's panel has controls nobody else gets, so it is re-sent to
-		// them alone, replacing what they were shown a moment ago.
-		if (this.state.phase === 'lobby') {
-			const host = Users.getExact(this.state.host);
-			if (host) {
-				host.sendTo(this.room, `|uhtmlchange|adventure|${lobbyView(this.state, this.campaign, true)}`);
-			}
+		this.room.send(`|fieldhtml|${field(this.state, this.campaign)}`);
+		for (const userid in this.room.users) {
+			this.sendControls(this.room.users[userid]);
 		}
-
 		this.room.update();
-
-		for (const player of this.players) {
-			this.updatePlayerView(player);
-		}
 	}
 
-	/** The private panel: a player's own party, and their starter picker. */
+	/** Sends one viewer the control surface appropriate to them. */
+	sendControls(user: User): void {
+		const playerState = this.playerStateFor(user);
+		this.room.sendUser(user, `|controlshtml|${controls(this.state, this.campaign, playerState)}`);
+	}
+
+	/** Repaints just one player's controls, e.g. after they pick a starter. */
 	updatePlayerView(player: AdventurePlayer): void {
 		const user = player.getUser();
-		if (!user) return;
-		const playerState = player.state;
-		if (!playerState) return;
-
-		if (this.state.phase === 'lobby' && !playerState.party.length) {
-			player.sendRoom(`|uhtml|adventure-self|${starterPicker(this.state.roomid, this.campaign)}`);
-			return;
-		}
-
-		player.sendRoom(`|uhtml|adventure-self|${selfView(this.campaign, playerState)}`);
+		if (user) this.sendControls(user);
 	}
 
 	override onConnect(user: User): void {
-		const player = this.playerTable[user.id];
-		if (player) {
-			this.updatePlayerView(player);
-		}
-		// Re-send the shared panel so a reconnecting user isn't staring at a
-		// blank room while waiting for the next update.
-		const shared = this.state.phase === 'lobby' ?
-			lobbyView(this.state, this.campaign, user.id === this.state.host) :
-			adventureView(this.state, this.campaign);
-		user.sendTo(this.room, `|uhtml|adventure|${shared}`);
+		// Anyone arriving - player or spectator - needs the current board and
+		// their own controls, since neither is replayed from the room log.
+		this.room.sendUser(user, `|fieldhtml|${field(this.state, this.campaign)}`);
+		this.sendControls(user);
 	}
 
 	/* -------------------------------------------------------------- *

@@ -1,9 +1,17 @@
 /**
- * Adventure - commands
+ * Adventure - commands and entry page
  *
  * A co-op playthrough of a Pokemon game, built on the battle framework.
- * The engine lives in server/adventure/; this file is only the command
- * surface and the buttons that drive it.
+ * The engine lives in server/adventure/.
+ *
+ * These commands exist to back buttons, not to be typed. The adventure UI is
+ * rendered into the room's `|controlshtml|`, and every button sends one of
+ * these via `/msgroom`. Nothing here calls `checkChat()`, so the buttons work
+ * for guests, for muted users, and in rooms under modchat - clicking a button
+ * in a game you are already in is not "talking".
+ *
+ * `/view-adventure` is the entry point, so starting an adventure needs a link
+ * rather than a command typed into lobby.
  *
  * Games are data, not code: `/adventure new emerald` looks up a campaign in
  * data/campaigns/, so a new game needs no changes here.
@@ -11,16 +19,31 @@
 
 import { Adventure } from '../adventure/adventure';
 import { allCampaigns, campaignNames, getCampaign, reloadCampaigns } from '../adventure/campaigns';
+import { entryPage } from '../adventure/render';
+import type { AdventureState } from '../adventure/state';
+
+function eachAdventure(): Adventure[] {
+	const found: Adventure[] = [];
+	for (const room of Rooms.rooms.values()) {
+		if (room.game?.gameid === 'adventure') found.push(room.game as Adventure);
+	}
+	return found;
+}
 
 /** One adventure hosted per person, so a single user can't fill the room list. */
 function findHostedAdventure(user: User): Adventure | null {
-	for (const room of Rooms.rooms.values()) {
-		const game = room.game;
-		if (game?.gameid === 'adventure' && (game as Adventure).state.host === user.id) {
-			return game as Adventure;
-		}
+	for (const game of eachAdventure()) {
+		const token = game.state.playerTokens[user.id];
+		if (token && game.state.host === token) return game;
 	}
 	return null;
+}
+
+/** Lobbies anyone can still join. */
+function openLobbies(): AdventureState[] {
+	return eachAdventure()
+		.filter(game => game.state.phase === 'lobby' && !game.ended)
+		.map(game => game.state);
 }
 
 /**
@@ -36,23 +59,27 @@ if (!process.send) {
 	}
 }
 
+export const pages: Chat.PageTable = {
+	adventure(query, user, connection) {
+		this.title = 'Adventures';
+		return entryPage(allCampaigns(), openLobbies());
+	},
+};
+
 export const commands: Chat.ChatCommands = {
 	adv: 'adventure',
 	adventure: {
 		''(target, room, user) {
-			return this.parse('/adventure help');
+			// Bare /adventure opens the entry page rather than printing help,
+			// since the page is the actual front door.
+			return this.parse('/join view-adventure');
 		},
 
 		create: 'new',
 		new(target, room, user) {
-			this.checkChat();
-			if (!user.named) {
-				throw new Chat.ErrorMessage(`You need to choose a username before starting an adventure.`);
-			}
-
 			const campaigns = allCampaigns();
 			if (!campaigns.length) {
-				throw new Chat.ErrorMessage(`No campaigns are installed on this server.`);
+				throw new Chat.ErrorMessage(`No games are installed on this server.`);
 			}
 
 			// A single installed campaign doesn't need naming.
@@ -63,41 +90,30 @@ export const commands: Chat.ChatCommands = {
 
 			const campaign = getCampaign(id);
 			if (!campaign) {
-				throw new Chat.ErrorMessage(`There's no campaign called "${id}". Available: ${campaignNames()}.`);
+				throw new Chat.ErrorMessage(`There's no game called "${id}". Available: ${campaignNames()}.`);
 			}
 
 			const existing = findHostedAdventure(user);
 			if (existing) {
 				throw new Chat.ErrorMessage(
-					`You are already hosting an adventure in <<${existing.state.roomid}>>. ` +
-					`End it first with /adventure end.`
+					`You are already hosting an adventure in <<${existing.state.roomid}>>. End that one first.`
 				);
 			}
 
 			const game = Adventure.create(user, campaign);
-			this.sendReply(`Created a ${campaign.name} adventure: <<${game.state.roomid}>>`);
-			return this.sendReply(`Invite friends by sending them that room link.`);
+			return this.sendReply(`Created a ${campaign.name} adventure: <<${game.state.roomid}>>`);
 		},
 		newhelp: [`/adventure new [game] - Creates a new adventure room and puts you in it as host.`],
 
 		games: 'list',
 		list(target, room, user) {
-			this.runBroadcast();
-			const campaigns = allCampaigns();
-			if (!campaigns.length) return this.sendReply(`No campaigns are installed on this server.`);
-
-			const rows = campaigns.map(campaign => {
-				const region = campaign.manifest.region ? ` (${campaign.manifest.region})` : '';
-				return `<li><strong>${campaign.id}</strong> - ${campaign.name}${region}</li>`;
-			}).join('');
-			return this.sendReplyBox(`<strong>Available games</strong><ul>${rows}</ul>`);
+			return this.parse('/join view-adventure');
 		},
-		listhelp: [`/adventure list - Shows which games can be played.`],
+		listhelp: [`/adventure list - Opens the adventure page.`],
 
 		join(target, room, user) {
 			room = this.requireRoom();
 			const game = this.requireGame(Adventure);
-			this.checkChat();
 			game.joinGame(user);
 		},
 		joinhelp: [`/adventure join - Joins the adventure in this room. Only possible before it starts.`],
@@ -114,7 +130,6 @@ export const commands: Chat.ChatCommands = {
 		pick(target, room, user) {
 			room = this.requireRoom();
 			const game = this.requireGame(Adventure);
-			this.checkChat();
 			if (!target) {
 				const names = game.campaign.manifest.starters.map(starter => starter.species).join(', ');
 				throw new Chat.ErrorMessage(`Which starter? Choose from: ${names}.`);
@@ -126,24 +141,22 @@ export const commands: Chat.ChatCommands = {
 		start(target, room, user) {
 			room = this.requireRoom();
 			const game = this.requireGame(Adventure);
-			this.checkChat();
 			game.start(user);
 		},
 		starthelp: [`/adventure start - Starts the adventure. Host only; everyone needs a starter first.`],
 
-		party(target, room, user) {
+		refresh(target, room, user) {
 			room = this.requireRoom();
 			const game = this.requireGame(Adventure);
-			const player = game.playerTable[user.id];
-			if (!player) throw new Chat.ErrorMessage(`You are not in this adventure.`);
-			game.updatePlayerView(player);
+			game.onConnect(user);
 		},
-		partyhelp: [`/adventure party - Re-displays your party panel.`],
+		refreshhelp: [`/adventure refresh - Repaints the adventure display.`],
 
 		end(target, room, user) {
 			room = this.requireRoom();
 			const game = this.requireGame(Adventure);
-			if (game.state.host !== user.id && !user.can('minigame', null, room)) {
+			const token = game.state.playerTokens[user.id];
+			if (game.state.host !== token && !user.can('minigame', null, room)) {
 				throw new Chat.ErrorMessage(`Only the host can end this adventure.`);
 			}
 			game.end(user);
@@ -153,15 +166,10 @@ export const commands: Chat.ChatCommands = {
 		reloadcampaigns(target, room, user) {
 			this.checkCan('rangeban');
 			reloadCampaigns();
-			for (const activeRoom of Rooms.rooms.values()) {
-				const game = activeRoom.game;
-				if (game?.gameid === 'adventure') (game as Adventure).campaign.reload();
-			}
+			for (const game of eachAdventure()) game.campaign.reload();
 			return this.sendReply(`Reloaded campaign data. Available: ${campaignNames()}.`);
 		},
-		reloadcampaignshelp: [
-			`/adventure reloadcampaigns - Re-reads data/campaigns from disk. Requires: &`,
-		],
+		reloadcampaignshelp: [`/adventure reloadcampaigns - Re-reads data/campaigns from disk. Requires: &`],
 
 		help(target, room, user) {
 			return this.parse('/help adventure');
@@ -169,13 +177,10 @@ export const commands: Chat.ChatCommands = {
 	},
 
 	adventurehelp: [
+		`Adventures are a co-op playthrough of a Pokemon game.`,
+		`Open <<view-adventure>> to start or join one - the rest is buttons.`,
+		``,
 		`/adventure new [game] - Creates a new adventure room and puts you in it as host.`,
-		`/adventure list - Shows which games can be played.`,
-		`/adventure join - Joins the adventure in this room, before it starts.`,
-		`/adventure leave - Leaves the adventure, before it starts.`,
-		`/adventure pick [starter] - Chooses your starter.`,
-		`/adventure start - Starts the adventure. Host only.`,
-		`/adventure party - Re-displays your party panel.`,
 		`/adventure end - Ends the adventure and closes the room. Host or staff only.`,
 	],
 };
