@@ -34,10 +34,11 @@
 import { Utils } from '../../lib';
 import { PRNG } from '../../sim/prng';
 import { RoomGame, RoomGamePlayer } from '../room-game';
-import { getCampaign, type Campaign } from './campaigns';
+import { getCampaign, type Campaign, type TrainerData } from './campaigns';
 import { allAdventures, deleteAdventure, saveAdventure } from './storage';
 import { panel } from './render';
 import { describeAll, meetsAll, unmet } from './progress';
+import { createTrainerBattle } from './trainer-battle';
 import { Vote, type VoteOption, type VoteResult } from './vote';
 import {
 	createAdventureState, createPlayerState, createPokemon, healParty,
@@ -52,6 +53,18 @@ const TRAVEL_VOTE_MS = 45 * 1000;
 
 /** Synthetic vote option id for healing rather than travelling. */
 const HEAL_OPTION = 'heal';
+
+/** Vote option id prefix for "fight this trainer". */
+const FIGHT_PREFIX = 'fight:';
+
+/**
+ * How many players fight one trainer.
+ *
+ * Showdown allows two a side and no more (`format.playerCount`), so this is a
+ * ceiling imposed by the simulator, not a design choice. Everyone else in the
+ * adventure spectates the sub-room and keeps voting.
+ */
+const MAX_BATTLERS = 2;
 
 /**
  * A player in the adventure.
@@ -83,6 +96,10 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	timeoutTimer: NodeJS.Timeout | null = null;
 	/** The open vote, if any. Transient - never persisted. */
 	vote: Vote | null = null;
+	/** The live battle sub-room, if one is running. */
+	battleRoomid: RoomID | null = null;
+	/** Who that battle is against, so its result can be recorded. */
+	battleTrainerId: string | null = null;
 
 	constructor(room: Room, state: AdventureState, campaign: Campaign) {
 		super(room);
@@ -395,9 +412,27 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	 * you cannot take yet, and why, is how a player learns the map; hiding it
 	 * just makes the world feel arbitrarily small.
 	 */
+	/** Trainers at the current location who have not been beaten yet. */
+	remainingTrainers(): { id: string, trainer: TrainerData }[] {
+		return this.campaign.trainersAt(this.state.location)
+			.filter(entry => !this.state.defeatedTrainers.includes(entry.id));
+	}
+
 	travelOptions(): VoteOption[] {
 		const options: VoteOption[] = [];
 		const here = this.here;
+		const remaining = this.remainingTrainers();
+
+		// The gauntlet comes first: while anyone is left standing, fighting them
+		// is the only way forward.
+		if (remaining.length) {
+			const next = remaining[0];
+			options.push({
+				id: `${FIGHT_PREFIX}${next.id}`,
+				label: `Battle ${next.trainer.trainerClass} ${next.trainer.name}`,
+				detail: remaining.length > 1 ? `${remaining.length} trainers left here` : `last one here`,
+			});
+		}
 
 		if (here?.pokecenter) {
 			const hurt = this.playersNeedingHealing();
@@ -410,11 +445,25 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 
 		for (const exit of this.campaign.exits(this.state.location)) {
 			const missing = unmet(this.state.progress, exit.requires);
+
+			// Trainers block the way onward, never the way back. Retreating to
+			// heal has to stay possible or a battered party is simply stuck.
+			const blockedByTrainers = !!remaining.length && exit.id !== this.state.cameFrom;
+
+			let locked;
+			if (missing.length) {
+				locked = `needs ${describeAll(missing)}`;
+			} else if (blockedByTrainers) {
+				locked = remaining.length === 1 ? `1 trainer still here` : `${remaining.length} trainers still here`;
+			}
+
 			options.push({
 				id: exit.id,
 				label: exit.location.name,
-				detail: this.state.visited.includes(exit.id) ? undefined : 'somewhere new',
-				locked: missing.length ? `needs ${describeAll(missing)}` : undefined,
+				detail: exit.id === this.state.cameFrom && remaining.length ?
+					'back the way you came' :
+					(this.state.visited.includes(exit.id) ? undefined : 'somewhere new'),
+				locked,
 			});
 		}
 		return options;
@@ -483,7 +532,122 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 			this.healEveryone();
 			return;
 		}
+		if (result.winner.id.startsWith(FIGHT_PREFIX)) {
+			this.startTrainerBattle(result.winner.id.slice(FIGHT_PREFIX.length));
+			return;
+		}
 		this.travelTo(result.winner.id);
+	}
+
+	/* -------------------------------------------------------------- *
+	 * Trainer battles
+	 * -------------------------------------------------------------- */
+
+	/**
+	 * Chooses who fights, by rotation: fewest battles first, oldest turn next.
+	 *
+	 * Rotating rather than voting keeps everyone involved without another
+	 * ballot before every fight, and stops one confident player monopolising
+	 * the run. Anyone whose party is wiped sits out - they have nothing to send.
+	 */
+	electBattlers(limit = MAX_BATTLERS): AdventurePlayerState[] {
+		return this.state.playerOrder
+			.map(token => this.state.players[token])
+			.filter(player => player?.party.some(pokemon => pokemon.hp > 0))
+			.sort((a, b) => (a.battlesFought - b.battlesFought) || (a.lastBattleAt - b.lastBattleAt))
+			.slice(0, limit);
+	}
+
+	startTrainerBattle(trainerId: string): void {
+		const entry = this.campaign.trainersAt(this.state.location)
+			.find(candidate => candidate.id === trainerId);
+		if (!entry) {
+			Monitor.error(`Adventure ${this.roomid}: no trainer "${trainerId}" at ${this.state.location}`);
+			this.openTravelVote();
+			return;
+		}
+
+		const battlers = this.electBattlers();
+		if (!battlers.length) {
+			this.room.add(
+				`|html|<div class="broadcast-red">Nobody has a Pokemon left to fight with.</div>`
+			).update();
+			this.openTravelVote();
+			return;
+		}
+
+		const online = battlers
+			.map(player => ({ player, user: Users.getExact(player.userid) }))
+			.filter((pair): pair is { player: AdventurePlayerState, user: User } => !!pair.user);
+		if (!online.length) {
+			this.room.add(
+				`|html|<div class="broadcast-red">The chosen battlers are offline; try again.</div>`
+			).update();
+			this.openTravelVote();
+			return;
+		}
+
+		const battle = createTrainerBattle({
+			parent: this.room,
+			campaign: this.campaign,
+			trainer: entry.trainer,
+			players: online,
+			seed: this.prng.getSeed(),
+		});
+		if (!battle) {
+			this.room.add(`|html|<div class="broadcast-red">That battle could not be started.</div>`).update();
+			this.openTravelVote();
+			return;
+		}
+
+		this.state.phase = 'battle';
+		this.battleRoomid = battle.roomid;
+		this.battleTrainerId = entry.id;
+		for (const { player } of online) {
+			player.battlesFought++;
+			player.lastBattleAt = Date.now();
+		}
+
+		const names = online.map(pair => pair.player.name).join(' and ');
+		this.room.add(
+			Utils.html`|html|<div class="infobox"><strong>${names}</strong> take on ` +
+			Utils.html`${entry.trainer.trainerClass} ${entry.trainer.name}! ` +
+			`<a href="/${battle.roomid}">Watch</a></div>`
+		);
+		this.save();
+		this.update();
+	}
+
+	/**
+	 * Called by `RoomBattle` on the parent room's game when a sub-battle ends.
+	 *
+	 * The trainer counts as beaten only if a human side won: a loss or a tie
+	 * leaves them standing, so the party has to regroup and come back.
+	 */
+	override onBattleWin(room: GameRoom, winnerid: ID): void {
+		if (this.ended || room.roomid !== this.battleRoomid) return;
+		this.battleRoomid = null;
+
+		const trainerId = this.battleTrainerId;
+		this.battleTrainerId = null;
+		const won = !!winnerid && !!this.state.playerTokens[winnerid];
+
+		if (won && trainerId && !this.state.defeatedTrainers.includes(trainerId)) {
+			this.state.defeatedTrainers.push(trainerId);
+			const trainer = this.campaign.trainer(trainerId);
+			this.room.add(
+				Utils.html`|html|<div class="broadcast-green">${trainer?.name || 'The trainer'} was defeated!</div>`
+			);
+		} else {
+			this.room.add(
+				`|html|<div class="broadcast-red">The party lost. That trainer is still standing.</div>`
+			);
+		}
+
+		const here = this.here;
+		this.state.phase = ['town', 'city'].includes(here?.kind || '') ? 'overworld' : 'route';
+		this.save();
+		this.openTravelVote();
 	}
 
 	healEveryone(): void {
@@ -518,6 +682,7 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		}
 
 		const firstVisit = !this.state.visited.includes(locationId);
+		this.state.cameFrom = this.state.location;
 		this.state.location = locationId;
 		if (firstVisit) this.state.visited.push(locationId);
 		this.state.phase = ['town', 'city'].includes(destination.kind) ? 'overworld' : 'route';

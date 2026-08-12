@@ -46,6 +46,14 @@ function migrate(state: AdventureState): AdventureState | null {
 		state.version = 2;
 	}
 
+	if (state.version === 2) {
+		// v3 tracks where the party walked in from, so a route's gauntlet can
+		// lock the way onward while leaving the way back open. An adventure
+		// mid-route when the server restarted simply has no retreat recorded.
+		(state as AnyObject).cameFrom = '';
+		state.version = 3;
+	}
+
 	return state.version === STATE_VERSION ? state : null;
 }
 

@@ -18,7 +18,7 @@ import type { Campaign } from './campaigns';
 import { emptyProgress, type Progress } from './progress';
 
 /** Bumped whenever the on-disk shape changes; see storage.ts for migrations. */
-export const STATE_VERSION = 2;
+export const STATE_VERSION = 3;
 
 export type AdventurePhase =
 	/** Gathering players; everyone picks a starter. */
@@ -107,6 +107,14 @@ export interface AdventureState {
 	seed: PRNGSeed;
 	/** Location id from the campaign's locations.json. */
 	location: string;
+	/**
+	 * Where the party walked in from.
+	 *
+	 * A route's trainers must be cleared before moving on, but retreating the
+	 * way you came is always allowed - so this is the one exit that stays open
+	 * while a gauntlet is unfinished.
+	 */
+	cameFrom: string;
 	visited: string[];
 	/**
 	 * Badges, HMs, key items and story flags, held by the group rather than by
@@ -346,6 +354,7 @@ export function createAdventureState(roomid: RoomID, campaign: Campaign): Advent
 		host: '',
 		seed: PRNG.generateSeed(),
 		location: campaign.manifest.startLocation,
+		cameFrom: '',
 		visited: [campaign.manifest.startLocation],
 		progress: emptyProgress(),
 		players: {},

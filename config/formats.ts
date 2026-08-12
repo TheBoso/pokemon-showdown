@@ -5606,6 +5606,30 @@ export const Formats: import('../sim/dex-formats').FormatList = [
 		ruleset: ['HP Percentage Mod', 'Cancel Mod', 'Max Team Size = 24', 'Max Move Count = 24', 'Max Level = 9999', 'Default Level = 100'],
 	},
 	{
+		// Used by the co-op Adventure mode (server/adventure/). Teams there are
+		// game-accurate rather than competitively legal - a level 5 Torchic with
+		// two moves, a trainer with one Poochyena - so the ruleset only keeps
+		// the quality-of-life mods and imposes no clauses.
+		name: "[Gen 3] Adventure",
+		mod: 'gen3',
+		searchShow: false,
+		challengeShow: false,
+		rated: false,
+		battle: { trunc: Math.trunc },
+		ruleset: ['HP Percentage Mod', 'Cancel Mod', 'Max Team Size = 6', 'Max Level = 100'],
+	},
+	{
+		// As above, but two players a side against the trainer's two slots.
+		name: "[Gen 3] Adventure Multi",
+		mod: 'gen3',
+		gameType: 'multi',
+		searchShow: false,
+		challengeShow: false,
+		rated: false,
+		battle: { trunc: Math.trunc },
+		ruleset: ['HP Percentage Mod', 'Cancel Mod', 'Max Team Size = 6', 'Max Level = 100'],
+	},
+	{
 		name: "[Gen 3] Doubles Custom Game",
 		mod: 'gen3',
 		gameType: 'doubles',

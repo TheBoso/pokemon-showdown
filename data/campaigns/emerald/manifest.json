@@ -19,6 +19,9 @@
 	"maxMoves": 4,
 	"shinyRate": 8192,
 
+	"battleFormat": "gen3adventure",
+	"multiBattleFormat": "gen3adventuremulti",
+
 	"data": {
 		"locations": "locations.json",
 		"trainers": "trainers.json",

@@ -51,6 +51,11 @@ export interface CampaignManifest {
 	/** Denominator of the shiny chance: 8192 in gen 3. */
 	shinyRate: number;
 
+	/** Showdown format id for a one-player-a-side trainer battle. */
+	battleFormat: string;
+	/** Showdown format id for two players a side. */
+	multiBattleFormat: string;
+
 	data: {
 		locations?: string,
 		trainers?: string,
@@ -318,6 +323,8 @@ function validate(manifest: AnyObject, dir: string): CampaignManifest | null {
 		maxPartySize: 6,
 		maxMoves: 4,
 		shinyRate: 8192,
+		battleFormat: 'gen3adventure',
+		multiBattleFormat: 'gen3adventuremulti',
 		data: {},
 		...manifest,
 	} as CampaignManifest;
