@@ -1,0 +1,537 @@
+{
+	"_comment": [
+		"Hoenn's map as a vote graph. Hand-curated, not generated: the decomp's warp",
+		"tables are exhaustive and noisy (every door, every ledge, every one-way drop),",
+		"and what this needs is the shape of a playthrough, not the shape of the ROM.",
+		"",
+		"Connections are declared in both directions and validated on load.",
+		"'requires' gates travel INTO a location; 'gymRequires' gates the gym only.",
+		"Routes split into north/south halves where a interior sits between them,",
+		"because that is how you actually traverse them.",
+		"",
+		"trainers[] and encounters are filled in by later milestones; the ids here",
+		"are the keys those tables will be looked up by."
+	],
+
+	"littleroot": {
+		"name": "Littleroot Town",
+		"kind": "town",
+		"connections": ["route101"],
+		"notes": "No Pokemon Centre in Emerald - the first heal is in Oldale."
+	},
+	"route101": {
+		"name": "Route 101",
+		"kind": "route",
+		"connections": ["littleroot", "oldale"],
+		"encounters": "route101"
+	},
+	"oldale": {
+		"name": "Oldale Town",
+		"kind": "town",
+		"connections": ["route101", "route102", "route103"],
+		"pokecenter": true,
+		"pokemart": ["potion", "pokeball", "antidote"]
+	},
+	"route103": {
+		"name": "Route 103",
+		"kind": "route",
+		"connections": [
+			"oldale",
+			{ "to": "route110", "requires": ["hm:surf"], "notes": "Open water east; skips the whole west of Hoenn if left ungated." }
+		],
+		"encounters": "route103",
+		"notes": "The rival battle."
+	},
+	"route102": {
+		"name": "Route 102",
+		"kind": "route",
+		"connections": ["oldale", "petalburg"],
+		"encounters": "route102"
+	},
+
+	"petalburg": {
+		"name": "Petalburg City",
+		"kind": "city",
+		"connections": ["route102", "route104south"],
+		"pokecenter": true,
+		"pokemart": ["potion", "pokeball", "antidote", "paralyzeheal"],
+		"gym": "norman",
+		"badge": "balance",
+		"gymRequires": ["badge:stone", "badge:knuckle", "badge:dynamo", "badge:heat"],
+		"notes": "You pass through in the first hour; Norman refuses you until four badges."
+	},
+	"route104south": {
+		"name": "Route 104 (South)",
+		"kind": "route",
+		"connections": [
+			"petalburg",
+			"petalburgwoods",
+			"route105",
+			{
+				"to": "dewford",
+				"requires": ["flag:briney_rescued"],
+				"notes": "Mr. Briney only sails once Peeko has been rescued in the woods."
+			}
+		],
+		"encounters": "route104"
+	},
+	"petalburgwoods": {
+		"name": "Petalburg Woods",
+		"kind": "forest",
+		"connections": ["route104south", "route104north"],
+		"encounters": "petalburgwoods"
+	},
+	"route104north": {
+		"name": "Route 104 (North)",
+		"kind": "route",
+		"connections": ["petalburgwoods", "rustboro"],
+		"encounters": "route104"
+	},
+	"rustboro": {
+		"name": "Rustboro City",
+		"kind": "city",
+		"connections": ["route104north", "route115", "route116"],
+		"pokecenter": true,
+		"pokemart": ["potion", "superpotion", "pokeball", "greatball", "repel"],
+		"gym": "roxanne",
+		"badge": "stone"
+	},
+
+	"route116": {
+		"name": "Route 116",
+		"kind": "route",
+		"connections": ["rustboro", "rusturftunnel"],
+		"encounters": "route116"
+	},
+	"rusturftunnel": {
+		"name": "Rusturf Tunnel",
+		"kind": "cave",
+		"connections": ["route116", "verdanturf"],
+		"encounters": "rusturftunnel",
+		"notes": "Blocked by rubble until the party can Rock Smash through to Verdanturf."
+	},
+	"route115": {
+		"name": "Route 115",
+		"kind": "route",
+		"connections": [
+			"rustboro",
+			{ "to": "meteorfalls", "requires": ["hm:surf"] }
+		],
+		"encounters": "route115",
+		"notes": "Walkable north from Rustboro; only the stretch to Meteor Falls is water."
+	},
+
+	"route105": {
+		"name": "Route 105",
+		"kind": "water",
+		"connections": ["route104south", "route106"],
+		"encounters": "route105",
+		"requires": ["hm:surf"]
+	},
+	"dewford": {
+		"name": "Dewford Town",
+		"kind": "town",
+		"connections": [
+			{ "to": "route104south", "requires": ["flag:briney_rescued"] },
+			"route106",
+			"route107"
+		],
+		"pokecenter": true,
+		"pokemart": ["potion", "pokeball", "greatball", "escaperope"],
+		"gym": "brawly",
+		"badge": "knuckle"
+	},
+	"route106": {
+		"name": "Route 106",
+		"kind": "water",
+		"connections": ["dewford", "route105", "granitecave"],
+		"encounters": "route106",
+		"requires": ["hm:surf"]
+	},
+	"granitecave": {
+		"name": "Granite Cave",
+		"kind": "cave",
+		"connections": ["route106"],
+		"encounters": "granitecave"
+	},
+	"route107": {
+		"name": "Route 107",
+		"kind": "water",
+		"connections": ["dewford", "route108"],
+		"encounters": "route107",
+		"requires": ["hm:surf"]
+	},
+	"route108": {
+		"name": "Route 108",
+		"kind": "water",
+		"connections": ["route107", "route109"],
+		"encounters": "route108",
+		"requires": ["hm:surf"]
+	},
+	"route109": {
+		"name": "Route 109",
+		"kind": "route",
+		"connections": ["route108", "slateport"],
+		"encounters": "route109",
+		"notes": "Slateport's beach - walkable, and worth having early for its trainers. The open water west is what needs Surf."
+	},
+
+	"slateport": {
+		"name": "Slateport City",
+		"kind": "city",
+		"connections": ["route109", "route110"],
+		"pokecenter": true,
+		"pokemart": ["potion", "superpotion", "greatball", "revive", "xattack"]
+	},
+	"route110": {
+		"name": "Route 110",
+		"kind": "route",
+		"connections": [
+			"slateport",
+			"mauville",
+			{ "to": "route103", "requires": ["hm:surf"] }
+		],
+		"encounters": "route110"
+	},
+	"mauville": {
+		"name": "Mauville City",
+		"kind": "city",
+		"connections": ["route110", "route111", "route117", "route118"],
+		"pokecenter": true,
+		"pokemart": ["superpotion", "greatball", "revive", "repel", "paralyzeheal"],
+		"gym": "wattson",
+		"badge": "dynamo"
+	},
+
+	"route117": {
+		"name": "Route 117",
+		"kind": "route",
+		"connections": ["mauville", "verdanturf"],
+		"encounters": "route117"
+	},
+	"verdanturf": {
+		"name": "Verdanturf Town",
+		"kind": "town",
+		"connections": ["route117", "rusturftunnel"],
+		"pokecenter": true,
+		"pokemart": ["superpotion", "greatball", "revive"]
+	},
+
+	"route111": {
+		"name": "Route 111",
+		"kind": "route",
+		"connections": [
+			"mauville",
+			"route112",
+			{ "to": "route113", "requires": ["item:gogoggles"], "notes": "The desert crossing." }
+		],
+		"encounters": "route111",
+		"notes": "Walkable from Mauville; only the desert stretch north needs Go-Goggles."
+	},
+	"route112": {
+		"name": "Route 112",
+		"kind": "route",
+		"connections": ["route111", "fierypath", "jaggedpass", "mtchimney"],
+		"encounters": "route112"
+	},
+	"fierypath": {
+		"name": "Fiery Path",
+		"kind": "cave",
+		"connections": ["route112"],
+		"encounters": "fierypath"
+	},
+	"jaggedpass": {
+		"name": "Jagged Pass",
+		"kind": "route",
+		"connections": ["route112", "mtchimney", "lavaridge", "magmahideout"],
+		"encounters": "jaggedpass",
+		"requires": ["flag:mt_chimney_cleared"],
+		"notes": "Team Magma holds the pass until Mt. Chimney is resolved, which is what keeps Lavaridge fourth."
+	},
+	"magmahideout": {
+		"name": "Magma Hideout",
+		"kind": "cave",
+		"connections": ["jaggedpass"],
+		"encounters": "magmahideout",
+		"requires": ["item:magmaemblem"]
+	},
+	"lavaridge": {
+		"name": "Lavaridge Town",
+		"kind": "town",
+		"connections": ["jaggedpass"],
+		"pokecenter": true,
+		"pokemart": ["superpotion", "greatball", "burnheal", "revive"],
+		"gym": "flannery",
+		"badge": "heat"
+	},
+	"mtchimney": {
+		"name": "Mt. Chimney",
+		"kind": "cave",
+		"connections": ["route112", "jaggedpass"],
+		"encounters": "mtchimney",
+		"notes": "Reached by the cable car from Route 112; the way onward is down Jagged Pass."
+	},
+	"route113": {
+		"name": "Route 113",
+		"kind": "route",
+		"connections": [
+			{ "to": "route111", "requires": ["item:gogoggles"] },
+			"fallarbor"
+		],
+		"encounters": "route113",
+		"notes": "The ash route, running west from Route 111's northern end to Fallarbor."
+	},
+	"fallarbor": {
+		"name": "Fallarbor Town",
+		"kind": "town",
+		"connections": ["route113", "route114"],
+		"pokecenter": true,
+		"pokemart": ["superpotion", "greatball", "revive", "repel"]
+	},
+	"route114": {
+		"name": "Route 114",
+		"kind": "route",
+		"connections": ["fallarbor", "meteorfalls"],
+		"encounters": "route114"
+	},
+	"meteorfalls": {
+		"name": "Meteor Falls",
+		"kind": "cave",
+		"connections": [
+			"route114",
+			{ "to": "route115", "requires": ["hm:surf"] }
+		],
+		"encounters": "meteorfalls"
+	},
+
+	"route118": {
+		"name": "Route 118",
+		"kind": "route",
+		"connections": [
+			"mauville",
+			{ "to": "route119", "requires": ["hm:surf"], "notes": "The channel splitting the route in two." },
+			{ "to": "route123", "requires": ["hm:surf"] }
+		],
+		"encounters": "route118",
+		"notes": "Walkable from Mauville only as far as the water; everything east needs Surf."
+	},
+	"route119": {
+		"name": "Route 119",
+		"kind": "route",
+		"connections": [
+			{ "to": "route118", "requires": ["hm:surf"] },
+			"fortree"
+		],
+		"encounters": "route119"
+	},
+	"fortree": {
+		"name": "Fortree City",
+		"kind": "city",
+		"connections": ["route119", "route120"],
+		"pokecenter": true,
+		"pokemart": ["superpotion", "hyperpotion", "ultraball", "revive"],
+		"gym": "winona",
+		"badge": "feather"
+	},
+	"route120": {
+		"name": "Route 120",
+		"kind": "route",
+		"connections": ["fortree", "route121"],
+		"encounters": "route120",
+		"requires": ["item:devonscope"],
+		"notes": "The Kecleon blocking the bridge is why Devon Scope gates this."
+	},
+	"route121": {
+		"name": "Route 121",
+		"kind": "route",
+		"connections": ["route120", "lilycove", "route122", "route123"],
+		"encounters": "route121"
+	},
+	"route123": {
+		"name": "Route 123",
+		"kind": "route",
+		"connections": [
+			{ "to": "route118", "requires": ["hm:surf"] },
+			"route121"
+		],
+		"encounters": "route123"
+	},
+	"route122": {
+		"name": "Route 122",
+		"kind": "water",
+		"connections": ["route121", "mtpyre"],
+		"encounters": "route122",
+		"requires": ["hm:surf"]
+	},
+	"mtpyre": {
+		"name": "Mt. Pyre",
+		"kind": "cave",
+		"connections": ["route122"],
+		"encounters": "mtpyre"
+	},
+
+	"lilycove": {
+		"name": "Lilycove City",
+		"kind": "city",
+		"connections": ["route121", "route124", "aquahideout"],
+		"pokecenter": true,
+		"pokemart": ["hyperpotion", "ultraball", "revive", "fullheal", "maxrepel"]
+	},
+	"aquahideout": {
+		"name": "Aqua Hideout",
+		"kind": "cave",
+		"connections": ["lilycove"],
+		"encounters": "aquahideout",
+		"requires": ["flag:magma_hideout_cleared"]
+	},
+	"route124": {
+		"name": "Route 124",
+		"kind": "water",
+		"connections": ["lilycove", "mossdeep", "route126"],
+		"encounters": "route124",
+		"requires": ["hm:surf"]
+	},
+	"mossdeep": {
+		"name": "Mossdeep City",
+		"kind": "city",
+		"connections": ["route124", "route125", "route127"],
+		"pokecenter": true,
+		"pokemart": ["hyperpotion", "ultraball", "revive", "fullheal"],
+		"gym": "tateandliza",
+		"badge": "mind"
+	},
+	"route125": {
+		"name": "Route 125",
+		"kind": "water",
+		"connections": ["mossdeep", "shoalcave"],
+		"encounters": "route125",
+		"requires": ["hm:surf"]
+	},
+	"shoalcave": {
+		"name": "Shoal Cave",
+		"kind": "cave",
+		"connections": ["route125"],
+		"encounters": "shoalcave"
+	},
+	"route127": {
+		"name": "Route 127",
+		"kind": "water",
+		"connections": ["mossdeep", "route128"],
+		"encounters": "route127",
+		"requires": ["hm:surf"]
+	},
+	"route128": {
+		"name": "Route 128",
+		"kind": "water",
+		"connections": ["route127", "seafloorcavern", "route129"],
+		"encounters": "route128",
+		"requires": ["hm:surf"]
+	},
+	"seafloorcavern": {
+		"name": "Seafloor Cavern",
+		"kind": "cave",
+		"connections": ["route128"],
+		"encounters": "seafloorcavern",
+		"requires": ["hm:dive"]
+	},
+	"route126": {
+		"name": "Route 126",
+		"kind": "water",
+		"connections": ["route124", "sootopolis"],
+		"encounters": "route126",
+		"requires": ["hm:surf"]
+	},
+	"sootopolis": {
+		"name": "Sootopolis City",
+		"kind": "city",
+		"connections": ["route126", "caveoforigin"],
+		"pokecenter": true,
+		"pokemart": ["hyperpotion", "ultraball", "fullrestore", "revive", "fullheal"],
+		"gym": "juan",
+		"badge": "rain",
+		"gymRequires": ["flag:kyogre_groudon_stopped"],
+		"notes": "The gym stays shut until the weather crisis is resolved."
+	},
+	"caveoforigin": {
+		"name": "Cave of Origin",
+		"kind": "cave",
+		"connections": ["sootopolis"]
+	},
+
+	"route129": {
+		"name": "Route 129",
+		"kind": "water",
+		"connections": ["route128", "route130"],
+		"encounters": "route129",
+		"requires": ["hm:surf"]
+	},
+	"route130": {
+		"name": "Route 130",
+		"kind": "water",
+		"connections": ["route129", "route131"],
+		"encounters": "route130",
+		"requires": ["hm:surf"]
+	},
+	"route131": {
+		"name": "Route 131",
+		"kind": "water",
+		"connections": ["route130", "pacifidlog", "skypillar"],
+		"encounters": "route131",
+		"requires": ["hm:surf"]
+	},
+	"skypillar": {
+		"name": "Sky Pillar",
+		"kind": "cave",
+		"connections": ["route131"],
+		"encounters": "skypillar",
+		"requires": ["hm:mach_bike"]
+	},
+	"pacifidlog": {
+		"name": "Pacifidlog Town",
+		"kind": "town",
+		"connections": ["route131", "route132"],
+		"pokecenter": true,
+		"pokemart": ["hyperpotion", "ultraball", "fullheal", "revive"]
+	},
+	"route132": {
+		"name": "Route 132",
+		"kind": "water",
+		"connections": ["pacifidlog", "route133"],
+		"encounters": "route132",
+		"requires": ["hm:surf"]
+	},
+	"route133": {
+		"name": "Route 133",
+		"kind": "water",
+		"connections": ["route132", "route134"],
+		"encounters": "route133",
+		"requires": ["hm:surf"]
+	},
+	"route134": {
+		"name": "Route 134",
+		"kind": "water",
+		"connections": ["route133", "evergrande"],
+		"encounters": "route134",
+		"requires": ["hm:surf"]
+	},
+	"evergrande": {
+		"name": "Ever Grande City",
+		"kind": "city",
+		"connections": ["route134", "victoryroad"],
+		"pokecenter": true
+	},
+	"victoryroad": {
+		"name": "Victory Road",
+		"kind": "cave",
+		"connections": ["evergrande", "pokemonleague"],
+		"encounters": "victoryroad",
+		"requires": ["badge:rain"]
+	},
+	"pokemonleague": {
+		"name": "Pokemon League",
+		"kind": "building",
+		"connections": ["victoryroad"],
+		"trainers": ["elite_sidney", "elite_phoebe", "elite_glacia", "elite_drake", "champion_wallace"],
+		"notes": "The gauntlet with no Pokemon Centre between fights."
+	}
+}
