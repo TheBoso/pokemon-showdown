@@ -54,6 +54,14 @@ function migrate(state: AdventureState): AdventureState | null {
 		state.version = 3;
 	}
 
+	if (state.version === 3) {
+		// v4 remembers where to wake up after a wipe. An adventure saved before
+		// this existed falls back to wherever it currently is, which is a kinder
+		// answer than sending everyone home to the start town.
+		(state as AnyObject).lastPokecenter = state.location;
+		state.version = 4;
+	}
+
 	return state.version === STATE_VERSION ? state : null;
 }
 

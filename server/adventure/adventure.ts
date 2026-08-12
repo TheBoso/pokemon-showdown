@@ -41,7 +41,7 @@ import { describeAll, meetsAll, unmet } from './progress';
 import { createTrainerBattle } from './trainer-battle';
 import { Vote, type VoteOption, type VoteResult } from './vote';
 import {
-	createAdventureState, createPlayerState, createPokemon, healParty,
+	createAdventureState, createPlayerState, createPokemon, healParty, isEveryoneWiped,
 	type AdventurePlayerState, type AdventureState,
 } from './state';
 
@@ -100,6 +100,8 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	battleRoomid: RoomID | null = null;
 	/** Who that battle is against, so its result can be recorded. */
 	battleTrainerId: string | null = null;
+	/** Tokens of whoever is fighting it, so a loss can be applied to them. */
+	battlePlayers: string[] = [];
 
 	constructor(room: Room, state: AdventureState, campaign: Campaign) {
 		super(room);
@@ -422,6 +424,10 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		const options: VoteOption[] = [];
 		const here = this.here;
 		const remaining = this.remainingTrainers();
+		// With every party down there is no gauntlet to fight, so it must not
+		// bar the road either - otherwise a wiped party on a route with no way
+		// back would have no legal move at all.
+		const canFight = !!this.electBattlers(1).length;
 
 		// The gauntlet comes first: while anyone is left standing, fighting them
 		// is the only way forward.
@@ -431,6 +437,7 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 				id: `${FIGHT_PREFIX}${next.id}`,
 				label: `Battle ${next.trainer.trainerClass} ${next.trainer.name}`,
 				detail: remaining.length > 1 ? `${remaining.length} trainers left here` : `last one here`,
+				locked: canFight ? undefined : `nobody has a Pokemon left`,
 			});
 		}
 
@@ -448,7 +455,7 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 
 			// Trainers block the way onward, never the way back. Retreating to
 			// heal has to stay possible or a battered party is simply stuck.
-			const blockedByTrainers = !!remaining.length && exit.id !== this.state.cameFrom;
+			const blockedByTrainers = !!remaining.length && canFight && exit.id !== this.state.cameFrom;
 
 			let locked;
 			if (missing.length) {
@@ -603,6 +610,7 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		this.state.phase = 'battle';
 		this.battleRoomid = battle.roomid;
 		this.battleTrainerId = entry.id;
+		this.battlePlayers = online.map(pair => pair.player.token);
 		for (const { player } of online) {
 			player.battlesFought++;
 			player.lastBattleAt = Date.now();
@@ -629,7 +637,9 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		this.battleRoomid = null;
 
 		const trainerId = this.battleTrainerId;
+		const battlers = this.battlePlayers;
 		this.battleTrainerId = null;
+		this.battlePlayers = [];
 		const won = !!winnerid && !!this.state.playerTokens[winnerid];
 
 		if (won && trainerId && !this.state.defeatedTrainers.includes(trainerId)) {
@@ -639,13 +649,78 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 				Utils.html`|html|<div class="broadcast-green">${trainer?.name || 'The trainer'} was defeated!</div>`
 			);
 		} else {
-			this.room.add(
-				`|html|<div class="broadcast-red">The party lost. That trainer is still standing.</div>`
-			);
+			this.applyDefeat(battlers);
 		}
 
 		const here = this.here;
 		this.state.phase = ['town', 'city'].includes(here?.kind || '') ? 'overworld' : 'route';
+		this.save();
+
+		// A wipe rewrites where everyone is, so resolve it before reopening the
+		// vote - otherwise the ballot would be for the location they just left.
+		if (isEveryoneWiped(this.state)) {
+			this.whiteOut();
+			return;
+		}
+		this.openTravelVote();
+	}
+
+	/**
+	 * You lose a Pokemon battle when your last Pokemon faints, so the losing
+	 * side's parties are wiped out rather than merely bruised.
+	 *
+	 * Without this a loss costs nothing: the same trainer could be re-fought at
+	 * full health forever, and the Pokemon Centre would be decoration.
+	 */
+	private applyDefeat(battlers: string[]): void {
+		const names: string[] = [];
+		for (const token of battlers) {
+			const player = this.state.players[token];
+			if (!player) continue;
+			for (const pokemon of player.party) {
+				pokemon.hp = 0;
+				pokemon.status = '';
+				pokemon.sleepTurns = 0;
+			}
+			names.push(player.name);
+		}
+
+		const who = names.length ? Utils.escapeHTML(names.join(' and ')) : `The party`;
+		this.room.add(
+			`|html|<div class="broadcast-red">${who} lost. ` +
+			`Their Pokemon have fainted, and that trainer is still standing.</div>`
+		);
+	}
+
+	/**
+	 * Everyone is down: back to the last Pokemon Centre, healed, lighter of
+	 * pocket. Emerald takes half your money; so do we.
+	 */
+	private whiteOut(): void {
+		const destination = this.campaign.location(this.state.lastPokecenter) ?
+			this.state.lastPokecenter :
+			this.campaign.manifest.startLocation;
+
+		for (const token of this.state.playerOrder) {
+			const player = this.state.players[token];
+			if (!player) continue;
+			healParty(player, this.campaign.mod);
+			player.money = Math.floor(player.money / 2);
+		}
+
+		this.state.cameFrom = '';
+		this.state.location = destination;
+		const here = this.campaign.location(destination);
+		this.state.phase = ['town', 'city'].includes(here?.kind || '') ? 'overworld' : 'route';
+
+		this.room.add(
+			`|html|<div class="broadcast-red"><strong>Everyone whited out!</strong></div>`
+		);
+		this.room.add(
+			Utils.html`|html|<div class="infobox">The party came to in ${here?.name || destination}, ` +
+			`healed, and half their money gone.</div>`
+		);
+
 		this.save();
 		this.openTravelVote();
 	}
@@ -685,6 +760,8 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		this.state.cameFrom = this.state.location;
 		this.state.location = locationId;
 		if (firstVisit) this.state.visited.push(locationId);
+		// Anywhere with a Centre becomes the place a wipe sends you back to.
+		if (destination.pokecenter) this.state.lastPokecenter = locationId;
 		this.state.phase = ['town', 'city'].includes(destination.kind) ? 'overworld' : 'route';
 		this.state.gauntletIndex = 0;
 

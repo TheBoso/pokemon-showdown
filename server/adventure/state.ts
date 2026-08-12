@@ -18,7 +18,7 @@ import type { Campaign } from './campaigns';
 import { emptyProgress, type Progress } from './progress';
 
 /** Bumped whenever the on-disk shape changes; see storage.ts for migrations. */
-export const STATE_VERSION = 3;
+export const STATE_VERSION = 4;
 
 export type AdventurePhase =
 	/** Gathering players; everyone picks a starter. */
@@ -115,6 +115,13 @@ export interface AdventureState {
 	 * while a gauntlet is unfinished.
 	 */
 	cameFrom: string;
+	/**
+	 * Where the party wakes up after a total wipe.
+	 *
+	 * Updated on arrival at anywhere with a Pokemon Centre. Emerald sends you
+	 * back to the last one you visited, not to the start.
+	 */
+	lastPokecenter: string;
 	visited: string[];
 	/**
 	 * Badges, HMs, key items and story flags, held by the group rather than by
@@ -355,6 +362,7 @@ export function createAdventureState(roomid: RoomID, campaign: Campaign): Advent
 		seed: PRNG.generateSeed(),
 		location: campaign.manifest.startLocation,
 		cameFrom: '',
+		lastPokecenter: campaign.manifest.startLocation,
 		visited: [campaign.manifest.startLocation],
 		progress: emptyProgress(),
 		players: {},
