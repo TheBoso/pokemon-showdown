@@ -115,10 +115,11 @@
 		"kind": "route",
 		"connections": [
 			"rustboro",
+			"route114",
 			{ "to": "meteorfalls", "requires": ["hm:surf"] }
 		],
 		"encounters": "route115",
-		"notes": "Walkable north from Rustboro; only the stretch to Meteor Falls is water."
+		"notes": "UNVERIFIED PACING: the ROM lists Route 114 as directly adjacent, which currently makes Fallarbor walkable from Rustboro with nothing. If that stretch really needs Surf in-game, gate the route114 edge and Fallarbor moves back to where it belongs. map.json records adjacency, not terrain, so the decomp cannot settle this one."
 	},
 
 	"route105": {
@@ -179,7 +180,7 @@
 	"slateport": {
 		"name": "Slateport City",
 		"kind": "city",
-		"connections": ["route109", "route110"],
+		"connections": ["route109", "route110", "route134"],
 		"pokecenter": true,
 		"pokemart": ["potion", "superpotion", "greatball", "revive", "xattack"]
 	},
@@ -231,8 +232,16 @@
 	"route112": {
 		"name": "Route 112",
 		"kind": "route",
-		"connections": ["route111", "fierypath", "jaggedpass", "mtchimney"],
-		"encounters": "route112"
+		"connections": [
+			"route111",
+			"fierypath",
+			{ "to": "route113", "requires": ["flag:magma_route112_cleared"] },
+			{ "to": "lavaridge", "requires": ["flag:magma_route112_cleared"] },
+			{ "to": "mtchimney", "requires": ["flag:magma_route112_cleared"], "notes": "The cable car station is past the grunts." },
+			"jaggedpass"
+		],
+		"encounters": "route112",
+		"notes": "Team Magma physically blocks the way west and north (Route112_EventScript_MagmaGrunts: 'can't let anyone pass until they're back'). That blockade is what keeps Flannery fourth - without it Lavaridge is a walk from Mauville. Exact trigger flag to be confirmed during the script pass."
 	},
 	"fierypath": {
 		"name": "Fiery Path",
@@ -243,7 +252,7 @@
 	"jaggedpass": {
 		"name": "Jagged Pass",
 		"kind": "route",
-		"connections": ["route112", "mtchimney", "lavaridge", "magmahideout"],
+		"connections": ["route112", "mtchimney", "magmahideout"],
 		"encounters": "jaggedpass",
 		"requires": ["flag:mt_chimney_cleared"],
 		"notes": "Team Magma holds the pass until Mt. Chimney is resolved, which is what keeps Lavaridge fourth."
@@ -258,7 +267,7 @@
 	"lavaridge": {
 		"name": "Lavaridge Town",
 		"kind": "town",
-		"connections": ["jaggedpass"],
+		"connections": [{ "to": "route112", "requires": ["flag:magma_route112_cleared"] }],
 		"pokecenter": true,
 		"pokemart": ["superpotion", "greatball", "burnheal", "revive"],
 		"gym": "flannery",
@@ -267,7 +276,10 @@
 	"mtchimney": {
 		"name": "Mt. Chimney",
 		"kind": "cave",
-		"connections": ["route112", "jaggedpass"],
+		"connections": [
+			{ "to": "route112", "requires": ["flag:magma_route112_cleared"] },
+			"jaggedpass"
+		],
 		"encounters": "mtchimney",
 		"notes": "Reached by the cable car from Route 112; the way onward is down Jagged Pass."
 	},
@@ -275,11 +287,12 @@
 		"name": "Route 113",
 		"kind": "route",
 		"connections": [
-			{ "to": "route111", "requires": ["item:gogoggles"] },
+			{ "to": "route111", "requires": ["item:gogoggles"], "notes": "The desert crossing." },
+			{ "to": "route112", "requires": ["flag:magma_route112_cleared"] },
 			"fallarbor"
 		],
 		"encounters": "route113",
-		"notes": "The ash route, running west from Route 111's northern end to Fallarbor."
+		"notes": "The ash route, running west to Fallarbor."
 	},
 	"fallarbor": {
 		"name": "Fallarbor Town",
@@ -291,7 +304,7 @@
 	"route114": {
 		"name": "Route 114",
 		"kind": "route",
-		"connections": ["fallarbor", "meteorfalls"],
+		"connections": ["fallarbor", "meteorfalls", "route115"],
 		"encounters": "route114"
 	},
 	"meteorfalls": {
@@ -344,24 +357,24 @@
 	"route121": {
 		"name": "Route 121",
 		"kind": "route",
-		"connections": ["route120", "lilycove", "route122", "route123"],
+		"connections": ["route120", "lilycove", "route122"],
 		"encounters": "route121"
+	},
+	"route122": {
+		"name": "Route 122",
+		"kind": "water",
+		"connections": ["route121", "route123", "mtpyre"],
+		"encounters": "route122",
+		"requires": ["hm:surf"]
 	},
 	"route123": {
 		"name": "Route 123",
 		"kind": "route",
 		"connections": [
-			{ "to": "route118", "requires": ["hm:surf"] },
-			"route121"
+			"route122",
+			{ "to": "route118", "requires": ["hm:surf"] }
 		],
 		"encounters": "route123"
-	},
-	"route122": {
-		"name": "Route 122",
-		"kind": "water",
-		"connections": ["route121", "mtpyre"],
-		"encounters": "route122",
-		"requires": ["hm:surf"]
 	},
 	"mtpyre": {
 		"name": "Mt. Pyre",
@@ -387,7 +400,7 @@
 	"route124": {
 		"name": "Route 124",
 		"kind": "water",
-		"connections": ["lilycove", "mossdeep", "route126"],
+		"connections": ["lilycove", "mossdeep", "route125", "route126"],
 		"encounters": "route124",
 		"requires": ["hm:surf"]
 	},
@@ -403,7 +416,7 @@
 	"route125": {
 		"name": "Route 125",
 		"kind": "water",
-		"connections": ["mossdeep", "shoalcave"],
+		"connections": ["mossdeep", "route124", "shoalcave"],
 		"encounters": "route125",
 		"requires": ["hm:surf"]
 	},
@@ -416,16 +429,17 @@
 	"route127": {
 		"name": "Route 127",
 		"kind": "water",
-		"connections": ["mossdeep", "route128"],
+		"connections": ["mossdeep", "route126", "route128"],
 		"encounters": "route127",
 		"requires": ["hm:surf"]
 	},
 	"route128": {
 		"name": "Route 128",
 		"kind": "water",
-		"connections": ["route127", "seafloorcavern", "route129"],
+		"connections": ["route127", "route129", "evergrande", "seafloorcavern"],
 		"encounters": "route128",
-		"requires": ["hm:surf"]
+		"requires": ["hm:surf"],
+		"notes": "The real approach to Ever Grande. The 132-134 chain runs the other way, west to Slateport."
 	},
 	"seafloorcavern": {
 		"name": "Seafloor Cavern",
@@ -437,14 +451,21 @@
 	"route126": {
 		"name": "Route 126",
 		"kind": "water",
-		"connections": ["route124", "sootopolis"],
+		"connections": [
+			"route124",
+			"route127",
+			{ "to": "sootopolis", "requires": ["hm:dive"], "notes": "Sootopolis sits in a crater; the only way in is down." }
+		],
 		"encounters": "route126",
 		"requires": ["hm:surf"]
 	},
 	"sootopolis": {
 		"name": "Sootopolis City",
 		"kind": "city",
-		"connections": ["route126", "caveoforigin"],
+		"connections": [
+			{ "to": "route126", "requires": ["hm:dive"] },
+			"caveoforigin"
+		],
 		"pokecenter": true,
 		"pokemart": ["hyperpotion", "ultraball", "fullrestore", "revive", "fullheal"],
 		"gym": "juan",
@@ -470,7 +491,8 @@
 		"kind": "water",
 		"connections": ["route129", "route131"],
 		"encounters": "route130",
-		"requires": ["hm:surf"]
+		"requires": ["hm:surf"],
+		"notes": "Mirage Island is here."
 	},
 	"route131": {
 		"name": "Route 131",
@@ -510,14 +532,15 @@
 	"route134": {
 		"name": "Route 134",
 		"kind": "water",
-		"connections": ["route133", "evergrande"],
+		"connections": ["route133", "slateport"],
 		"encounters": "route134",
-		"requires": ["hm:surf"]
+		"requires": ["hm:surf"],
+		"notes": "The 132-134 current runs west, back to Slateport - it is a loop home, not the road to the League."
 	},
 	"evergrande": {
 		"name": "Ever Grande City",
 		"kind": "city",
-		"connections": ["route134", "victoryroad"],
+		"connections": ["route128", "victoryroad"],
 		"pokecenter": true
 	},
 	"victoryroad": {
