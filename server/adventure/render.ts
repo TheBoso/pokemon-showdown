@@ -619,9 +619,17 @@ export function entryPage(campaigns: Campaign[], open: AdventureState[]): string
 		for (const state of open) {
 			const count = state.playerOrder.length;
 			const hostName = state.players[state.host]?.name || 'someone';
+			// Opens the *panel*, not the chat room, and does it with `joinRoom`
+			// rather than `send`.
+			//
+			// `send` posts to the room the button sits in, and this is a page -
+			// so the `/join` it used to carry was addressed to something the
+			// server has no room for, and the button did nothing whatsoever.
+			// Pointing it at the panel is also the better target: the panel is
+			// the game, and opening it joins the chat room server-side anyway.
 			buf += Utils.html`<li><strong>${hostName}</strong>'s ${state.campaign} run ` +
 				`&mdash; ${count} player(s) ` +
-				`<button class="button" name="send" value="/join ${state.roomid}">Join</button></li>`;
+				`<button class="button" name="joinRoom" value="view-${state.roomid}">Join</button></li>`;
 		}
 		buf += `</ul>`;
 	}

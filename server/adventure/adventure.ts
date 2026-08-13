@@ -278,7 +278,7 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 			// but a player coming back to their own adventure. This is the usual
 			// way it happens - a client reconnects as a guest first and renames a
 			// moment later, so the room was joined by somebody who wasn't yet Dom.
-			if (this.rebindReturningPlayer(user)) this.update();
+			this.rebindReturningPlayer(user);
 			return;
 		}
 
@@ -332,6 +332,12 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		if (!this.addPlayer(user)) return false;
 
 		this.save();
+		// Repaint, because the panel may already be open and showing the wrong
+		// thing. Coming back to a run is a race: the page can be served a
+		// moment before the room join re-attaches you, and it would then sit
+		// there telling you that you are spectating your own adventure until
+		// something else happened to trigger an update.
+		this.update();
 		return true;
 	}
 
