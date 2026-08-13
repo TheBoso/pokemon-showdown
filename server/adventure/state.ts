@@ -18,7 +18,7 @@ import type { Campaign } from './campaigns';
 import { emptyProgress, type Progress } from './progress';
 
 /** Bumped whenever the on-disk shape changes; see storage.ts for migrations. */
-export const STATE_VERSION = 5;
+export const STATE_VERSION = 6;
 
 export type AdventurePhase =
 	/** Gathering players; everyone picks a starter. */
@@ -73,6 +73,19 @@ export interface PartyPokemon {
 	caughtAt: string;
 }
 
+/**
+ * A decision waiting on one player.
+ *
+ * Levelling up can raise questions only the owner can answer - which move to
+ * give up for a new one, whether to let something evolve - and a co-op run
+ * cannot stop for them: five other people are mid-adventure. So they queue
+ * here, render in that player's panel, and wait. Ignoring one forever is a
+ * legal answer, and means "no".
+ */
+export type Pending =
+	{ kind: 'learn', uid: string, move: string, level: number } |
+	{ kind: 'evolve', uid: string, into: string, level: number };
+
 export interface AdventurePlayerState {
 	/**
 	 * Stable identity for this player, independent of their userid.
@@ -90,6 +103,8 @@ export interface AdventurePlayerState {
 	box: PartyPokemon[];
 	bag: { [itemid: string]: number };
 	money: number;
+	/** Move-learning and evolution choices this player has not answered yet. */
+	pending: Pending[];
 	/** Drives battler rotation, so the same two people don't fight everything. */
 	battlesFought: number;
 	lastBattleAt: number;
@@ -175,6 +190,54 @@ export function natureModifier(nature: string, stat: keyof StatsTable): number {
 export function recalcMaxHP(pokemon: PartyPokemon, mod: string): number {
 	const species = Dex.mod(mod).species.get(pokemon.species);
 	return calcHP(species.baseStats.hp, pokemon.ivs.hp, pokemon.evs.hp, pokemon.level, pokemon.species);
+}
+
+/* ------------------------------------------------------------------ *
+ * Growth curves
+ *
+ * The six gen 3 curves, as the total EXP needed to *be* a given level. Two of
+ * them are piecewise, which is why this is a table of functions rather than
+ * one formula with a coefficient.
+ *
+ * These live here beside the stat maths, rather than in progression.ts with
+ * everything else about levelling, for one reason: `createPokemon` needs them.
+ * A Pokemon made at level 20 must start with the EXP of a level 20, or the
+ * next level would cost it a whole curve's worth instead of one band. Keeping
+ * the curves here is what lets progression.ts depend on state.ts and not the
+ * other way about.
+ * ------------------------------------------------------------------ */
+
+export const MAX_LEVEL = 100;
+
+type Curve = (level: number) => number;
+
+const CURVES: { [name: string]: Curve } = {
+	fast: n => Math.floor(4 * n ** 3 / 5),
+	mediumfast: n => n ** 3,
+	// Dips below zero for the first couple of levels; the games clamp, so do we.
+	mediumslow: n => Math.max(0, Math.floor(6 * n ** 3 / 5 - 15 * n ** 2 + 100 * n - 140)),
+	slow: n => Math.floor(5 * n ** 3 / 4),
+	erratic: n => {
+		if (n < 50) return Math.floor(n ** 3 * (100 - n) / 50);
+		if (n < 68) return Math.floor(n ** 3 * (150 - n) / 100);
+		if (n < 98) return Math.floor(n ** 3 * Math.floor((1911 - 10 * n) / 3) / 500);
+		return Math.floor(n ** 3 * (160 - n) / 100);
+	},
+	fluctuating: n => {
+		if (n < 15) return Math.floor(n ** 3 * (Math.floor((n + 1) / 3) + 24) / 50);
+		if (n < 36) return Math.floor(n ** 3 * (n + 14) / 50);
+		return Math.floor(n ** 3 * (Math.floor(n / 2) + 32) / 50);
+	},
+};
+
+/** Medium Fast is the curve half the dex uses, and a safe answer for the rest. */
+const DEFAULT_CURVE = 'mediumfast';
+
+/** Total EXP needed to be this level. */
+export function expForLevel(campaign: Campaign, species: string, level: number): number {
+	const name = campaign.extraFor(species)?.growthRate || DEFAULT_CURVE;
+	const curve = CURVES[name] || CURVES[DEFAULT_CURVE];
+	return curve(Math.max(1, Math.min(level, MAX_LEVEL)));
 }
 
 /* ------------------------------------------------------------------ *
@@ -272,7 +335,10 @@ export function createPokemon(options: {
 		species: species.name,
 		nickname: '',
 		level: options.level,
-		exp: 0,
+		// The EXP of something that *is* this level, not of something starting
+		// from nothing - otherwise a Lv20 catch would owe a whole curve before
+		// reaching 21 instead of one band's worth.
+		exp: expForLevel(options.campaign, species.name, options.level),
 		moves,
 		pp: moves.map(move => movePP(move, mod)),
 		hp: 0,
@@ -345,6 +411,7 @@ export function createPlayerState(user: User, campaign: Campaign): AdventurePlay
 		box: [],
 		bag: { ...campaign.manifest.startBag },
 		money: campaign.manifest.startMoney,
+		pending: [],
 		battlesFought: 0,
 		lastBattleAt: 0,
 	};

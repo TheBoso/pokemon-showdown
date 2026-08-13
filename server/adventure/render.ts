@@ -24,6 +24,7 @@
 import { Utils } from '../../lib';
 import type { Campaign } from './campaigns';
 import { describeRequirement } from './progress';
+import { expToNextLevel, levelProgress } from './progression';
 import type { SearchOption } from './encounters';
 import type { Vote } from './vote';
 import {
@@ -109,6 +110,25 @@ export function pokemonRow(pokemon: PartyPokemon): string {
 		` <small>${pokemon.hp}/${pokemon.maxhp}</small>` +
 		statusTag(pokemon) +
 		`</span>`
+	);
+}
+
+/**
+ * How far through its level a Pokemon is.
+ *
+ * Thinner and cooler than the HP bar on purpose - it sits directly underneath
+ * one, and two bars of equal weight read as two health bars at a glance.
+ * Shown only on your own party; the shared board would be a wall of them.
+ */
+function expBar(campaign: Campaign, pokemon: PartyPokemon): string {
+	const percent = Math.round(levelProgress(campaign, pokemon) * 100);
+	const owed = expToNextLevel(campaign, pokemon);
+	return (
+		`<span style="display:inline-block;width:60px;height:3px;border:1px solid #99a;` +
+		`background:#eee;vertical-align:middle">` +
+		`<span style="display:block;height:100%;width:${percent}%;background:#6a8fd0"></span>` +
+		`</span>` +
+		(owed ? ` <small style="color:#999">${owed} EXP to Lv${pokemon.level + 1}</small>` : ``)
 	);
 }
 
@@ -303,6 +323,66 @@ function voteControls(state: AdventureState, vote: Vote, voterToken: string | nu
 	return buf;
 }
 
+/**
+ * A decision the owner owes an answer to, rendered as the first thing they see.
+ *
+ * Only the oldest is shown. A gauntlet can raise four of these at once, and a
+ * wall of prompts is how a player ends up clicking through them without
+ * reading - which defeats the point of asking at all.
+ */
+function pendingControls(
+	state: AdventureState, campaign: Campaign, player: AdventurePlayerState
+): string {
+	const entry = player.pending?.[0];
+	if (!entry) return '';
+
+	const pokemon = [...player.party, ...player.box].find(mon => mon.uid === entry.uid);
+	if (!pokemon) return '';
+
+	const id = state.roomid;
+	const dex = Dex.mod(campaign.mod);
+	const remaining = player.pending.length > 1 ?
+		` <small style="color:#666">(${player.pending.length - 1} more after this)</small>` : '';
+
+	let buf = `<div style="padding:8px;border:1px solid #b8a; border-radius:4px;margin:6px 0">`;
+
+	if (entry.kind === 'evolve') {
+		buf += Utils.html`<p style="margin:2px"><strong>${displayName(pokemon)}</strong> is evolving into ` +
+			Utils.html`<strong>${entry.into}</strong>!</p>` + remaining;
+		buf += `<p style="margin:6px 2px">`;
+		buf += button(id, `/adventure evolve ${pokemon.uid},${toID(entry.into)},yes`, 'Let it evolve', {
+			notifying: true,
+		});
+		buf += ` ` + button(id, `/adventure evolve ${pokemon.uid},${toID(entry.into)},no`, 'Stop it');
+		buf += `</p>`;
+		buf += `<small style="color:#888">Stopping is not final - it will ask again next level.</small>`;
+		buf += `</div>`;
+		return buf;
+	}
+
+	const move = dex.moves.get(entry.move);
+	buf += Utils.html`<p style="margin:2px"><strong>${displayName(pokemon)}</strong> wants to learn ` +
+		Utils.html`<strong>${move.name}</strong>` + `</p>` + remaining;
+	buf += Utils.html`<p style="margin:2px;color:#666;font-size:9pt">${move.shortDesc || ''} ` +
+		Utils.html`(${move.type}, ${move.category})</p>`;
+	buf += `<p style="margin:6px 2px;color:#666;font-size:9pt">` +
+		`It already knows four moves. Which should it forget?</p>`;
+
+	for (const [slot, known] of pokemon.moves.entries()) {
+		const knownMove = dex.moves.get(known);
+		buf += `<div style="margin:2px 0">`;
+		buf += button(id, `/adventure learn ${pokemon.uid},${entry.move},${slot}`, Utils.escapeHTML(knownMove.name));
+		buf += Utils.html` <small style="color:#888">${knownMove.type} &middot; ` +
+			Utils.html`${knownMove.category}${knownMove.basePower ? ` · ${knownMove.basePower} BP` : ''}</small>`;
+		buf += `</div>`;
+	}
+
+	buf += `<p style="margin:6px 2px">` +
+		button(id, `/adventure learn ${pokemon.uid},${entry.move},skip`, `Don't learn ${Utils.escapeHTML(move.name)}`) +
+		`</p></div>`;
+	return buf;
+}
+
 /* ------------------------------------------------------------------ *
  * Personal actions
  *
@@ -400,7 +480,8 @@ function partyControls(
 
 	buf += `<table style="margin:0 auto">`;
 	for (const [index, pokemon] of player.party.entries()) {
-		buf += `<tr><td style="padding:2px 6px">${pokemonRow(pokemon)}</td>`;
+		buf += `<tr><td style="padding:2px 6px">${pokemonRow(pokemon)}`;
+		buf += `<div style="margin-left:24px">${expBar(campaign, pokemon)}</div></td>`;
 		buf += `<td style="padding:2px 6px;white-space:nowrap">`;
 		if (index > 0) {
 			buf += button(id, `/adventure lead ${pokemon.uid}`, 'Lead', { disabled: busy }) + ` `;
@@ -499,6 +580,9 @@ export function controls(
 	}
 
 	buf += `<div style="padding:8px">`;
+	// Before anything else: an unanswered level-up is the one thing on this
+	// panel that is waiting on the player rather than the other way round.
+	buf += pendingControls(state, campaign, player);
 	buf += partyControls(state, campaign, player, actions.busy);
 	buf += searchControls(state.roomid, actions.search);
 	buf += bagControls(state, campaign, player, actions.busy);

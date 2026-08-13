@@ -11,7 +11,7 @@
 
 import { FS } from '../../lib';
 import { getCampaign } from './campaigns';
-import { STATE_VERSION, type AdventureState } from './state';
+import { expForLevel, STATE_VERSION, type AdventureState } from './state';
 
 const SAVE_FILE = 'databases/adventures.json';
 
@@ -78,6 +78,21 @@ function migrate(state: AdventureState): AdventureState | null {
 			}
 		}
 		state.version = 5;
+	}
+
+	if (state.version === 5) {
+		// v6 added EXP, so every Pokemon needs the EXP total of something that
+		// already *is* its level - starting them all at zero would leave a
+		// mid-run party owing a whole growth curve before its next level.
+		const campaign = getCampaign(state.campaign);
+		for (const player of Object.values(state.players || {})) {
+			player.pending ||= [];
+			if (!campaign) continue;
+			for (const pokemon of [...player.party || [], ...player.box || []]) {
+				if (!pokemon.exp) pokemon.exp = expForLevel(campaign, pokemon.species, pokemon.level);
+			}
+		}
+		state.version = 6;
 	}
 
 	return state.version === STATE_VERSION ? state : null;

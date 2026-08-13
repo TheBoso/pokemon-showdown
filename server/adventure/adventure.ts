@@ -44,9 +44,10 @@ import {
 import { createWildBattle, WildBattle } from './wild-battle';
 import { METHOD_INFO, methodsAt, rollEncounter, type SearchOption } from './encounters';
 import { Vote, type VoteOption, type VoteResult } from './vote';
+import { applyExp, evolve, expYield, forgetMove, maybeShedinja } from './progression';
 import {
-	createAdventureState, createPlayerState, createPokemon, healParty, isEveryoneWiped,
-	type AdventurePlayerState, type AdventureState, type PartyPokemon,
+	createAdventureState, createPlayerState, createPokemon, displayName, healParty, isEveryoneWiped,
+	type AdventurePlayerState, type AdventureState, type PartyPokemon, type Pending,
 } from './state';
 
 /** How long an untouched lobby sticks around before it cleans itself up. */
@@ -267,6 +268,12 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		const player = this.playerTable[oldUserid];
 		if (!player) {
 			super.onRename(user, oldUserid, isJoining, isForceRenamed);
+			// Signing in as a name that already owns a party in this run is the
+			// *other* direction of the same idea: not a spectator picking a name,
+			// but a player coming back to their own adventure. This is the usual
+			// way it happens - a client reconnects as a guest first and renames a
+			// moment later, so the room was joined by somebody who wasn't yet Dom.
+			if (this.rebindReturningPlayer(user)) this.update();
 			return;
 		}
 
@@ -295,6 +302,33 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	/* -------------------------------------------------------------- *
 	 * Joining and leaving
 	 * -------------------------------------------------------------- */
+
+	/**
+	 * Re-attaches a returning player to the party they already have.
+	 *
+	 * `joinGame` is shut once a run starts, and the constructor can only rebind
+	 * players who happened to be online at the moment the room was restored -
+	 * which, after a restart, is nobody. Without this the adventure comes back
+	 * exactly as promised and then refuses every command from the people who
+	 * were playing it, because `playerTable` is empty.
+	 *
+	 * Only ever re-attaches: someone with no token is a spectator and stays one.
+	 *
+	 * Called from both entry points, because they are genuinely separate: the
+	 * panel is a *page*, and opening a page does not join the room, so a player
+	 * who clicks straight back to `view-adventure-N` never triggers the room's
+	 * connect hook and would sit there being told they are spectating their own
+	 * adventure.
+	 */
+	private rebindReturningPlayer(user: User): boolean {
+		if (this.playerTable[user.id]) return false;
+		const token = this.state.playerTokens[user.id];
+		if (!token || !this.state.players[token]) return false;
+		if (!this.addPlayer(user)) return false;
+
+		this.save();
+		return true;
+	}
 
 	override joinGame(user: User): void {
 		if (this.state.phase !== 'lobby') {
@@ -678,10 +712,17 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		if (this.ended || room.roomid !== this.battleRoomid) return;
 		this.battleRoomid = null;
 
+		// EXP first: the payout is matched to the team by position, and the team
+		// was built from whoever was standing when the battle began. Absorbing
+		// the result flattens fainted party members to 0 HP, which changes that
+		// list - so read it while it still means what it meant at the start.
+		const sent = battle && this.sentLists(battle);
+
 		// Carry damage, status and PP out of the battle before deciding
 		// anything: a party that limped out at 2 HP is not the same as one that
 		// walked out untouched.
 		if (battle && report.sides.length) this.absorbBattleState(battle, report.sides);
+		if (battle && sent) this.awardExp(battle, sent, true);
 
 		const trainerId = this.battleTrainerId;
 		const battlers = this.battlePlayers;
@@ -742,6 +783,115 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 				}
 			}
 		}
+	}
+
+	/* -------------------------------------------------------------- *
+	 * EXP and levelling
+	 * -------------------------------------------------------------- */
+
+	/**
+	 * The party members each side actually took into the battle, in team order.
+	 *
+	 * This is the same list `partyToTeam` built when the battle started, so a
+	 * team index from the simulator indexes straight into it. It must be taken
+	 * *before* the battle result is absorbed, because absorbing knocks fainted
+	 * members down to 0 HP and the list is defined by who had HP.
+	 */
+	private sentLists(battle: TrainerBattle): Map<number, PartyPokemon[]> {
+		const lists = new Map<number, PartyPokemon[]>();
+		for (const [sideIndex, token] of battle.playerSides) {
+			const player = this.state.players[token];
+			if (player) lists.set(sideIndex, player.party.filter(pokemon => pokemon.hp > 0));
+		}
+		return lists;
+	}
+
+	/**
+	 * Pays out everything the battle earned, and queues whatever that raises.
+	 *
+	 * Reported per Pokemon rather than per knockout: a six-trainer gauntlet
+	 * produces a dozen payouts, and "Torchic gained 240 EXP and grew to Lv14"
+	 * is the part anyone reads.
+	 */
+	private awardExp(battle: TrainerBattle, sent: Map<number, PartyPokemon[]>, fromTrainer: boolean): void {
+		interface Tally {
+			player: AdventurePlayerState;
+			pokemon: PartyPokemon;
+			gained: number;
+			startLevel: number;
+			learned: string[];
+		}
+		const tallies = new Map<string, Tally>();
+
+		for (const event of battle.expEvents) {
+			const winners: { player: AdventurePlayerState, pokemon: PartyPokemon }[] = [];
+			for (const key of event.participants) {
+				const [sideIndex, teamIndex] = key.split(':').map(Number);
+				const token = battle.playerSides.get(sideIndex);
+				const player = token ? this.state.players[token] : null;
+				const pokemon = sent.get(sideIndex)?.[teamIndex];
+				if (player && pokemon) winners.push({ player, pokemon });
+			}
+			if (!winners.length) continue;
+
+			const gained = expYield(
+				this.campaign,
+				{ species: event.species, level: event.level, fromTrainer },
+				winners.length
+			);
+
+			for (const { player, pokemon } of winners) {
+				let tally = tallies.get(pokemon.uid);
+				if (!tally) {
+					tally = { player, pokemon, gained: 0, startLevel: pokemon.level, learned: [] };
+					tallies.set(pokemon.uid, tally);
+				}
+
+				const result = applyExp(this.campaign, pokemon, gained);
+				tally.gained += gained;
+				tally.learned.push(...result.learned);
+				for (const entry of result.pending) this.queuePending(player, entry);
+			}
+		}
+
+		for (const tally of tallies.values()) {
+			this.reportExp(tally.player, tally.pokemon, tally.gained, tally.startLevel, tally.learned);
+		}
+	}
+
+	private reportExp(
+		player: AdventurePlayerState, pokemon: PartyPokemon, gained: number,
+		startLevel: number, learned: string[]
+	): void {
+		const dex = Dex.mod(this.campaign.mod);
+		let line = Utils.html`<strong>${displayName(pokemon)}</strong> gained ${gained} EXP`;
+		if (pokemon.level > startLevel) {
+			line += Utils.html` and grew to Lv${pokemon.level}`;
+		}
+		line += `.`;
+		for (const moveid of learned) {
+			line += Utils.html` It learned ${dex.moves.get(moveid).name}!`;
+		}
+
+		this.room.add(
+			Utils.html`|html|<div class="infobox"><small>${player.name}:</small> ` + line + `</div>`
+		);
+	}
+
+	/**
+	 * Adds a decision to a player's queue, unless it is already there.
+	 *
+	 * The same question can be raised twice - a Pokemon that levels past its
+	 * evolution point in two consecutive battles, a move offered again after
+	 * being declined - and asking twice is noise, not a second chance.
+	 */
+	private queuePending(player: AdventurePlayerState, entry: Pending): void {
+		player.pending ||= [];
+		const duplicate = player.pending.some(existing => (
+			existing.kind === entry.kind && existing.uid === entry.uid &&
+			(entry.kind === 'evolve' || (existing as any).move === (entry as any).move)
+		));
+		if (!duplicate) player.pending.push(entry);
 	}
 
 	/**
@@ -872,7 +1022,12 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		const player = this.state.players[token];
 		if (!player) return;
 
+		const sent = this.sentLists(battle);
 		if (report.sides.length) this.absorbBattleState(battle, report.sides);
+		// Catching pays nothing - the wild Pokemon is fainted off the field to
+		// end the battle, but it was captured, not beaten. Emerald is explicit
+		// about this and it is what stops a Master Ball being an EXP button.
+		if (!report.caught) this.awardExp(battle, sent, false);
 
 		// The bag is authoritative inside the battle while balls are being
 		// thrown, so it comes back rather than being decremented by guesswork.
@@ -1024,6 +1179,127 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 
 		player.party.splice(found.index, 1);
 		player.party.unshift(found.pokemon);
+
+		this.save();
+		this.update();
+	}
+
+	/* -------------------------------------------------------------- *
+	 * Answering a level-up
+	 *
+	 * Both of these are choices the owner has to make, so they sit in that
+	 * player's panel until answered. They do not block anyone: a co-op run
+	 * cannot stop five people while one decides what Torchic should forget.
+	 * -------------------------------------------------------------- */
+
+	/** Finds a queued decision, and the Pokemon it is about. */
+	private takePending(
+		player: AdventurePlayerState, kind: Pending['kind'], uid: string,
+		matches: (entry: Pending) => boolean
+	): { entry: Pending, pokemon: PartyPokemon } | null {
+		player.pending ||= [];
+		const index = player.pending.findIndex(
+			entry => entry.kind === kind && entry.uid === uid && matches(entry)
+		);
+		if (index < 0) return null;
+
+		const found = [...player.party, ...player.box].find(pokemon => pokemon.uid === uid);
+		if (!found) {
+			// The Pokemon is gone; the question goes with it.
+			player.pending.splice(index, 1);
+			return null;
+		}
+		return { entry: player.pending.splice(index, 1)[0], pokemon: found };
+	}
+
+	/**
+	 * Answers a "learn this over what?" prompt.
+	 *
+	 * `slot` is which of the four to give up, or -1 to keep them all. Both are
+	 * real answers - a starter's fourth move is often better than the fifth.
+	 */
+	learnMove(user: User, uid: string, move: string, slot: number): void {
+		const player = this.actingPlayer(user, `learn a move`);
+		const moveid = toID(move);
+
+		const found = this.takePending(player, 'learn', uid, entry => (
+			entry.kind === 'learn' && entry.move === moveid
+		));
+		if (!found) throw new Chat.ErrorMessage(`That decision has already been made.`);
+
+		const name = Dex.mod(this.campaign.mod).moves.get(moveid).name;
+		if (slot < 0) {
+			this.room.add(
+				Utils.html`|html|<div class="infobox"><small>${player.name}:</small> ` +
+				Utils.html`${displayName(found.pokemon)} did not learn ${name}.</div>`
+			);
+		} else {
+			const forgotten = found.pokemon.moves[slot];
+			if (!forgetMove(this.campaign, found.pokemon, moveid, slot)) {
+				throw new Chat.ErrorMessage(`That move slot doesn't exist.`);
+			}
+			const forgottenName = Dex.mod(this.campaign.mod).moves.get(forgotten).name;
+			this.room.add(
+				Utils.html`|html|<div class="infobox"><small>${player.name}:</small> ` +
+				Utils.html`${displayName(found.pokemon)} forgot ${forgottenName} and learned ${name}!</div>`
+			);
+		}
+
+		this.save();
+		this.update();
+	}
+
+	/**
+	 * Answers an evolution prompt.
+	 *
+	 * Declining is not permanent: the check runs again on the next level-up, so
+	 * a Pokemon kept unevolved keeps asking, exactly as it does in the games.
+	 */
+	resolveEvolution(user: User, uid: string, into: string, accept: boolean): void {
+		const player = this.actingPlayer(user, `evolve a Pokemon`);
+
+		const found = this.takePending(player, 'evolve', uid, entry => (
+			entry.kind === 'evolve' && toID(entry.into) === toID(into)
+		));
+		if (!found) throw new Chat.ErrorMessage(`That decision has already been made.`);
+
+		if (!accept) {
+			this.room.add(
+				Utils.html`|html|<div class="infobox"><small>${player.name}:</small> ` +
+				Utils.html`${displayName(found.pokemon)} stopped evolving.</div>`
+			);
+			this.save();
+			this.update();
+			return;
+		}
+
+		const was = displayName(found.pokemon);
+		if (!evolve(this.campaign, found.pokemon, into)) {
+			throw new Chat.ErrorMessage(`That evolution isn't possible.`);
+		}
+
+		this.room.add(
+			Utils.html`|html|<div class="broadcast-green">${player.name}'s ${was} evolved into ` +
+			Utils.html`${found.pokemon.species}!</div>`
+		);
+
+		// Nincada's other half: a Shedinja left behind, if there is a spare slot
+		// and a spare ball to put it in.
+		const extra = maybeShedinja(this.campaign, player, found.pokemon, (species, level) => createPokemon({
+			campaign: this.campaign,
+			species,
+			level,
+			prng: this.prng,
+			trainer: player.token as ID,
+			location: this.state.location,
+		}));
+		if (extra) {
+			this.state.seed = this.prng.getSeed();
+			this.room.add(
+				Utils.html`|html|<div class="broadcast-green">A ${extra.species} was left behind in ` +
+				Utils.html`${player.name}'s party!</div>`
+			);
+		}
 
 		this.save();
 		this.update();
@@ -1191,6 +1467,9 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 
 	/** The panel as HTML, for the page handler to render on first open. */
 	panelFor(user: User): string {
+		// Opening the page is how most people come back to a run, so this is the
+		// other place a returning player has to be reattached to their party.
+		this.rebindReturningPlayer(user);
 		const playerState = this.playerStateFor(user);
 		return panel(this.state, this.campaign, playerState, this.vote, this.viewerContext(playerState));
 	}
@@ -1221,6 +1500,10 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	}
 
 	override onConnect(user: User, connection: Connection): void {
+		// Before anything is drawn: if this is somebody coming back to a run
+		// that outlived a restart, give them their party back.
+		this.rebindReturningPlayer(user);
+
 		// The panel *is* the game, so opening it is not something anyone should
 		// have to go looking for. Going through `/join` rather than pushing the
 		// HTML directly is what registers it in `openPages`, which is what makes

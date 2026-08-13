@@ -83,6 +83,7 @@ export interface CampaignManifest {
 		trainers?: string,
 		encounters?: string,
 		speciesExtra?: string,
+		evolutions?: string,
 	};
 }
 
@@ -317,6 +318,29 @@ export interface SpeciesExtra {
 	growthRate: string;
 }
 
+/**
+ * One way a species can evolve, as the campaign's own game defines it.
+ *
+ * Showdown's dex carries evolution data, but it carries *current* data: later
+ * generations moved methods around and changed levels. A campaign is a
+ * specific game, so this comes from that game.
+ *
+ * `kind` is deliberately open: the engine applies the kinds it understands and
+ * ignores the rest, so a campaign can ship methods for systems that do not
+ * exist yet (stones need a shop that sells them, trading needs trading)
+ * without the engine having to know about them in advance.
+ */
+export interface EvolutionEntry {
+	kind: string;
+	/** Species name to become. */
+	into: string;
+	/** Level to reach, for the level-triggered kinds. */
+	level?: number;
+	/** Item id, for stone and trade-holding kinds. */
+	stone?: string;
+	beauty?: number;
+}
+
 /* ------------------------------------------------------------------ *
  * Loading
  * ------------------------------------------------------------------ */
@@ -523,6 +547,15 @@ export class Campaign {
 	/** Catch rate, base EXP and growth curve - none of which Showdown's dex carries. */
 	extraFor(species: string): SpeciesExtra | null {
 		return this.speciesExtra()?.[toID(species)] || null;
+	}
+
+	evolutions(): { [speciesid: string]: EvolutionEntry[] } | null {
+		return this.load<{ evolutions: { [id: string]: EvolutionEntry[] } }>('evolutions')?.evolutions || null;
+	}
+
+	/** Every way this species can evolve, in the campaign's own game. */
+	evolutionsFor(species: string): EvolutionEntry[] {
+		return this.evolutions()?.[toID(species)] || [];
 	}
 
 	/** Every ball this game has, weakest first. */

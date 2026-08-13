@@ -36,6 +36,7 @@
 		"locations": "locations.json",
 		"trainers": "trainers.json",
 		"encounters": "encounters.json",
-		"speciesExtra": "species-extra.json"
+		"speciesExtra": "species-extra.json",
+		"evolutions": "evolutions.json"
 	}
 }

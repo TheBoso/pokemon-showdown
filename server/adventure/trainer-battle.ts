@@ -71,10 +71,32 @@ export interface TrainerBattleOptions {
 	seed?: PRNGSeed;
 }
 
+/**
+ * One Pokemon of the opposing side going down, and who was in front of it
+ * when it did.
+ *
+ * Gen 3 splits EXP between *participants* - everyone who was sent out against
+ * that Pokemon - not across the whole party, so who was standing there has to
+ * be recorded as it happens. Participants are `sideIndex:teamIndex`, which is
+ * the same coordinate `absorbBattleState` uses to map results back.
+ */
+export interface ExpEvent {
+	species: string;
+	level: number;
+	participants: string[];
+}
+
 /** `p1a: Torchic` -> 1. Side ids stay p1..p4 even in multi. */
 function slotNumber(position: string): number {
 	const match = /^p(\d)/.exec(position);
 	return match ? Number(match[1]) : 0;
+}
+
+/** `|switch|p2a: Bob|Poochyena, L3, M|17/17` -> the level in the details field. */
+function levelFromDetails(details: string): number {
+	// Showdown leaves the level out entirely at 100.
+	const match = /\bL(\d+)\b/.exec(details || '');
+	return match ? Number(match[1]) : 100;
 }
 
 /** In multi, p1+p3 face p2+p4; in singles, p1 faces p2. */
@@ -93,6 +115,21 @@ export class TrainerBattle extends RoomBattle {
 	mod: string;
 	/** Side index (0-based) -> player token, for mapping results back. */
 	playerSides = new Map<number, string>();
+
+	/**
+	 * EXP earned, in the order it was earned.
+	 *
+	 * Collected here rather than worked out afterwards because "who fought it"
+	 * is only knowable while it is happening - by the end of the battle the
+	 * field has been cleared and nothing in the final state says who faced what.
+	 */
+	expEvents: ExpEvent[] = [];
+	/** Human side index -> team index of whoever it currently has out. */
+	private activeIndex = new Map<number, number>();
+	/** Foe position -> the participant keys that have faced what stands there. */
+	private facing = new Map<string, Set<string>>();
+	/** Foe position -> what stands there, so a faint knows what it was worth. */
+	private foeOnField = new Map<string, { species: string, level: number }>();
 
 	constructor(room: GameRoom, options: RoomBattleOptions, trainer: TrainerBattleOptions) {
 		super(room, options);
@@ -128,9 +165,54 @@ export class TrainerBattle extends RoomBattle {
 		return foes;
 	}
 
+	/** True for a slot the trainer (or the wild Pokemon) is playing. */
+	private isFoePosition(position: string): boolean {
+		return this.aiSlots.has(position.slice(0, 2) as SideID);
+	}
+
+	/** Everyone currently on the field on a human side, as participant keys. */
+	private currentParticipants(): string[] {
+		return [...this.activeIndex].map(([sideIndex, teamIndex]) => `${sideIndex}:${teamIndex}`);
+	}
+
+	/**
+	 * Records which of a player's party is out, straight from their `|request|`.
+	 *
+	 * The request's `side.pokemon` is in team order and flags the active one,
+	 * which is the only place the team *index* is stated outright - the public
+	 * log gives nicknames, and two unnamed Zigzagoon are indistinguishable there.
+	 */
+	private noteActive(slot: SideID): void {
+		const sideIndex = slotNumber(slot) - 1;
+		if (!this.playerSides.has(sideIndex)) return;
+
+		const stored = this[slot]?.request;
+		if (!stored?.request) return;
+
+		let parsed: AnyObject;
+		try {
+			parsed = JSON.parse(stored.request);
+		} catch {
+			return;
+		}
+
+		const team: AnyObject[] = parsed.side?.pokemon || [];
+		const index = team.findIndex(entry => entry.active);
+		if (index < 0) return;
+		this.activeIndex.set(sideIndex, index);
+
+		// Anyone on the field is facing whatever is standing opposite, so a
+		// switch-in earns a share of the next thing that goes down.
+		const key = `${sideIndex}:${index}`;
+		for (const [position, seen] of this.facing) {
+			if (this.foeOnField.has(position)) seen.add(key);
+		}
+	}
+
 	/**
 	 * Scrapes the public battle log for who is on the field and how hurt they
-	 * are. This is the AI's only window onto the other side.
+	 * are. This is the AI's only window onto the other side - and, for a foe
+	 * slot, where its worth in EXP is read off and its faint is banked.
 	 */
 	private observe(lines: string[]): void {
 		for (const line of lines) {
@@ -141,6 +223,12 @@ export class TrainerBattle extends RoomBattle {
 				const position = rest[0]?.split(':')[0];
 				const species = rest[1]?.split(',')[0]?.trim();
 				if (position && species) this.seen.set(position, { species, hpFraction: 1 });
+
+				if (position && species && this.isFoePosition(position)) {
+					// A fresh foe: its own EXP, and its own list of who fought it.
+					this.foeOnField.set(position, { species, level: levelFromDetails(rest[1]) });
+					this.facing.set(position, new Set(this.currentParticipants()));
+				}
 				continue;
 			}
 
@@ -163,6 +251,19 @@ export class TrainerBattle extends RoomBattle {
 				const position = rest[0]?.split(':')[0];
 				const view = position && this.seen.get(position);
 				if (view) view.hpFraction = 0;
+				if (!position) continue;
+
+				if (this.isFoePosition(position)) {
+					this.bankExp(position);
+				} else {
+					// A Pokemon that faints stops earning: gen 3 pays participants
+					// still standing when the foe goes down, not everyone who ever
+					// traded a hit with it.
+					const sideIndex = slotNumber(position) - 1;
+					const teamIndex = this.activeIndex.get(sideIndex);
+					if (teamIndex === undefined) continue;
+					for (const seen of this.facing.values()) seen.delete(`${sideIndex}:${teamIndex}`);
+				}
 			}
 		}
 	}
@@ -193,13 +294,40 @@ export class TrainerBattle extends RoomBattle {
 		});
 	}
 
+	/**
+	 * A foe went down: record what it was worth and who was in front of it.
+	 *
+	 * A Pokemon caught rather than beaten is fainted off the field by the ball
+	 * move, so it lands here too. Catching pays no EXP in the games, but that
+	 * is the caller's call to make - it learns about the catch from the final
+	 * report, and reading it out of the log here would mean matching on the
+	 * text of a flavour message.
+	 */
+	private bankExp(position: string): void {
+		const foe = this.foeOnField.get(position);
+		this.foeOnField.delete(position);
+		const participants = this.facing.get(position);
+		this.facing.delete(position);
+
+		if (!foe) return;
+		this.expEvents.push({
+			species: foe.species,
+			level: foe.level,
+			participants: [...participants || []],
+		});
+	}
+
 	override receive(lines: string[]): void {
 		if (lines[0] === 'update') this.observe(lines.slice(1));
 
 		super.receive(lines);
 
-		// `super.receive` has stored the request by now; answer it if it is ours.
-		if (lines[0] === 'sideupdate') this.act(lines[1] as SideID);
+		// `super.receive` has stored the request by now; answer it if it is ours,
+		// and note who is on the field if it is a player's.
+		if (lines[0] === 'sideupdate') {
+			this.act(lines[1] as SideID);
+			this.noteActive(lines[1] as SideID);
+		}
 	}
 
 	/** Answers one AI slot's outstanding request, if it has one. */

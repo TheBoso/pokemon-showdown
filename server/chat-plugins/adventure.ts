@@ -83,6 +83,14 @@ export const pages: Chat.PageTable = {
 				`Back to adventures</button></p></div>`;
 		}
 
+		// Every button on the panel posts to the adventure room through
+		// `/msgroom`, which requires being in that room - but a page opens on
+		// its own, so anyone who comes back to `view-adventure-N` directly gets
+		// a fully live panel on which nothing works. Joining here is the mirror
+		// of what already happens the other way round: joining the room
+		// force-opens the panel.
+		if (room && !user.inRooms.has(room.roomid)) user.joinRoom(room, connection);
+
 		this.title = game.campaign.name;
 		return game.panelFor(user);
 	},
@@ -214,6 +222,37 @@ export const commands: Chat.ChatCommands = {
 			game.withdraw(user, target.trim());
 		},
 		takehelp: [`/adventure take [pokemon] - Moves one of your Pokemon from your box to your party.`],
+
+		/**
+		 * Both of these carry the full question in the button, not just an
+		 * answer. A panel left open across a level-up would otherwise let a
+		 * stale click answer whatever question happens to be at the front of
+		 * the queue now.
+		 */
+		learn(target, room, user) {
+			room = this.requireRoom();
+			const game = this.requireGame(Adventure);
+			const [uid, move, choice] = target.split(',').map(part => part.trim());
+			if (!uid || !move || !choice) {
+				throw new Chat.ErrorMessage(`Use the buttons on the adventure panel.`);
+			}
+			// `skip` is a real answer: four good moves beat five mediocre ones.
+			const slot = toID(choice) === 'skip' ? -1 : parseInt(choice);
+			if (slot !== -1 && isNaN(slot)) throw new Chat.ErrorMessage(`Which move should it forget?`);
+			game.learnMove(user, uid, move, slot);
+		},
+		learnhelp: [`/adventure learn [pokemon],[move],[slot|skip] - Answers a move-learning prompt.`],
+
+		evolve(target, room, user) {
+			room = this.requireRoom();
+			const game = this.requireGame(Adventure);
+			const [uid, into, choice] = target.split(',').map(part => part.trim());
+			if (!uid || !into || !choice) {
+				throw new Chat.ErrorMessage(`Use the buttons on the adventure panel.`);
+			}
+			game.resolveEvolution(user, uid, into, ['yes', 'y', 'ok'].includes(toID(choice)));
+		},
+		evolvehelp: [`/adventure evolve [pokemon],[species],[yes|no] - Answers an evolution prompt.`],
 
 		lead(target, room, user) {
 			room = this.requireRoom();
