@@ -24,11 +24,36 @@
 import { Utils } from '../../lib';
 import type { Campaign } from './campaigns';
 import { describeRequirement } from './progress';
+import type { SearchOption } from './encounters';
 import type { Vote } from './vote';
 import {
 	displayName, isFainted,
 	type AdventurePlayerState, type AdventureState, type PartyPokemon,
 } from './state';
+
+/**
+ * What one viewer can do right now, over and above the shared state.
+ *
+ * Searching, shopping and shuffling the party are personal - two people looking
+ * at the same adventure see different buttons - so this is passed alongside the
+ * state rather than derived from it.
+ */
+export interface ViewerContext {
+	/** The wild-search buttons this viewer should see, and why any are shut. */
+	search: SearchOption[];
+	/**
+	 * True while this viewer's party is committed to a live battle.
+	 *
+	 * A team is handed to the simulator once, at the start, and the result is
+	 * matched back onto the party by position. Reordering it mid-battle would
+	 * write the wrong Pokemon's HP onto the wrong Pokemon, so everything that
+	 * touches the party or the bag is frozen until the battle ends.
+	 */
+	busy: boolean;
+}
+
+/** For spectators and for the lobby, where none of this applies. */
+export const NO_ACTIONS: ViewerContext = { search: [], busy: false };
 
 /** Wraps a command so a button sends it to the adventure room from anywhere. */
 export function cmd(roomid: RoomID, command: string): string {
@@ -194,13 +219,14 @@ export function field(state: AdventureState, campaign: Campaign): string {
  * So everything goes through the field, which the panel leaves alone.
  */
 export function panel(
-	state: AdventureState, campaign: Campaign, player: AdventurePlayerState | null, vote: Vote | null
+	state: AdventureState, campaign: Campaign, player: AdventurePlayerState | null, vote: Vote | null,
+	actions: ViewerContext = NO_ACTIONS
 ): string {
 	return (
 		`<div style="padding:4px">` +
 		field(state, campaign) +
 		`<hr style="border:none;border-top:1px solid #ccc;margin:8px 0" />` +
-		controls(state, campaign, player, vote) +
+		controls(state, campaign, player, vote, actions) +
 		`</div>`
 	);
 }
@@ -277,6 +303,140 @@ function voteControls(state: AdventureState, vote: Vote, voterToken: string | nu
 	return buf;
 }
 
+/* ------------------------------------------------------------------ *
+ * Personal actions
+ *
+ * Searching, shopping and the box belong to one player, happen whenever that
+ * player likes, and never touch the phase machine - so they render below the
+ * ballot rather than inside it. Everyone else's adventure carries on while
+ * somebody is rummaging through their box.
+ * ------------------------------------------------------------------ */
+
+function sectionLabel(text: string): string {
+	return `<div style="color:#666;font-size:9pt;margin:8px 0 4px">${Utils.escapeHTML(text)}</div>`;
+}
+
+/**
+ * The wild-search buttons.
+ *
+ * Methods the location has but the party cannot use yet - water with no Surf,
+ * fishing with no rod - render disabled with the reason beside them, the same
+ * way a locked road does on the ballot. Seeing that a route has water is how
+ * you learn to come back once you have Surf.
+ */
+function searchControls(roomid: RoomID, options: SearchOption[]): string {
+	if (!options.length) return '';
+
+	let buf = sectionLabel('Wild Pokemon');
+	for (const option of options) {
+		buf += `<div style="margin:2px 0">`;
+		if (option.locked) {
+			buf += `<button class="button" disabled>${Utils.escapeHTML(option.label)}</button>`;
+			buf += Utils.html` <small style="color:#b06">${option.locked}</small>`;
+		} else {
+			buf += button(roomid, `/adventure search ${option.method}`, Utils.escapeHTML(option.label));
+		}
+		buf += `</div>`;
+	}
+	return buf;
+}
+
+/**
+ * What you are carrying, and what is for sale where you are standing.
+ *
+ * These are one section because they are one decision: the only reason to look
+ * at the mart is that the bag is looking thin.
+ */
+function bagControls(
+	state: AdventureState, campaign: Campaign, player: AdventurePlayerState, busy: boolean
+): string {
+	const carried = campaign.balls().filter(ball => (player.bag[ball.id] || 0) > 0);
+	const stock = campaign.stockAt(state.location);
+	if (!carried.length && !stock.length) return '';
+
+	let buf = sectionLabel('Bag');
+	buf += carried.length ?
+		carried
+			.map(ball => Utils.html`<span style="margin-right:10px">${ball.name} &times;${player.bag[ball.id]}</span>`)
+			.join('') :
+		`<span style="color:#888">Nothing to throw. Buy a Poke Ball.</span>`;
+
+	if (stock.length) {
+		buf += sectionLabel('Poke Mart');
+		for (const ball of stock) {
+			// `stockAt` only returns priced entries, so this is never undefined.
+			const price = ball.price!;
+			buf += button(state.roomid, `/adventure buy ${ball.id}`, Utils.escapeHTML(`${ball.name} $${price}`), {
+				disabled: busy || player.money < price,
+			}) + ` `;
+		}
+	}
+	return buf;
+}
+
+/**
+ * The party, with the buttons that rearrange it.
+ *
+ * Order is not cosmetic: `partyToTeam` sends the party as it stands, so
+ * whoever is first is who walks into the next battle. And a caught Pokemon
+ * that overflowed into the box is unreachable without a way to swap it out,
+ * which is what makes this part of catching rather than a nicety beside it.
+ */
+function partyControls(
+	state: AdventureState, campaign: Campaign, player: AdventurePlayerState, busy: boolean
+): string {
+	const id = state.roomid;
+	const max = campaign.manifest.maxPartySize;
+	const full = player.party.length >= max;
+
+	let buf = `<div style="text-align:center;color:#666;font-size:9pt;margin-bottom:6px">` +
+		`Your party (${player.party.length}/${max})` +
+		Utils.html` &middot; $${player.money}</div>`;
+
+	if (!player.party.length) {
+		buf += `<div style="text-align:center;color:#888">${partyView(player)}</div>`;
+		return buf;
+	}
+
+	buf += `<table style="margin:0 auto">`;
+	for (const [index, pokemon] of player.party.entries()) {
+		buf += `<tr><td style="padding:2px 6px">${pokemonRow(pokemon)}</td>`;
+		buf += `<td style="padding:2px 6px;white-space:nowrap">`;
+		if (index > 0) {
+			buf += button(id, `/adventure lead ${pokemon.uid}`, 'Lead', { disabled: busy }) + ` `;
+		}
+		// The last one standing cannot be put away: a player with an empty party
+		// has no legal move and nothing to send out.
+		if (player.party.length > 1) {
+			buf += button(id, `/adventure box ${pokemon.uid}`, 'Box', { disabled: busy });
+		}
+		buf += `</td></tr>`;
+	}
+	buf += `</table>`;
+
+	if (player.box.length) {
+		buf += sectionLabel(`Box (${player.box.length})`);
+		buf += `<table style="margin:0 auto">`;
+		for (const pokemon of player.box) {
+			buf += `<tr><td style="padding:2px 6px">${pokemonRow(pokemon)}</td>`;
+			buf += `<td style="padding:2px 6px;white-space:nowrap">`;
+			buf += button(id, `/adventure take ${pokemon.uid}`, 'Take', { disabled: busy || full });
+			buf += `</td></tr>`;
+		}
+		buf += `</table>`;
+		if (full) {
+			buf += `<p style="text-align:center;color:#888;font-size:9pt;margin:4px">` +
+				`Your party is full - box someone first.</p>`;
+		}
+	}
+
+	if (busy) {
+		buf += `<p style="text-align:center;color:#888;font-size:9pt;margin:4px">` +
+			`Your party is in a battle; you can rearrange it when that finishes.</p>`;
+	}
+	return buf;
+}
+
 /**
  * Controls for one viewer.
  *
@@ -284,7 +444,8 @@ function voteControls(state: AdventureState, vote: Vote, voterToken: string | nu
  * button and nothing else.
  */
 export function controls(
-	state: AdventureState, campaign: Campaign, player: AdventurePlayerState | null, vote: Vote | null
+	state: AdventureState, campaign: Campaign, player: AdventurePlayerState | null, vote: Vote | null,
+	actions: ViewerContext = NO_ACTIONS
 ): string {
 	const roomid = state.roomid;
 
@@ -338,10 +499,9 @@ export function controls(
 	}
 
 	buf += `<div style="padding:8px">`;
-	buf += `<div style="text-align:center;color:#666;font-size:9pt;margin-bottom:6px">` +
-		`Your party (${player.party.length}/${campaign.manifest.maxPartySize})` +
-		Utils.html` &middot; $${player.money}</div>`;
-	buf += `<div style="text-align:center">${partyView(player)}</div>`;
+	buf += partyControls(state, campaign, player, actions.busy);
+	buf += searchControls(state.roomid, actions.search);
+	buf += bagControls(state, campaign, player, actions.busy);
 	buf += `</div>`;
 	return buf;
 }

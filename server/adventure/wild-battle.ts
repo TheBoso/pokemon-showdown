@@ -17,7 +17,7 @@
  */
 
 import { Utils } from '../../lib';
-import { PRNG } from '../../sim/prng';
+import type { PRNG } from '../../sim/prng';
 import type { RoomBattleOptions } from '../room-battle';
 import { TrainerBattle } from './trainer-battle';
 import { partyToWildTeam, wildToTeam } from './teams';

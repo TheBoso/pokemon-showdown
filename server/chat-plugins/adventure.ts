@@ -180,6 +180,49 @@ export const commands: Chat.ChatCommands = {
 		},
 		votehelp: [`/adventure vote [destination] - Votes for where the party goes next.`],
 
+		look: 'search',
+		search(target, room, user) {
+			room = this.requireRoom();
+			const game = this.requireGame(Adventure);
+			if (!target) throw new Chat.ErrorMessage(`Search for what? Use the buttons on the adventure panel.`);
+			game.search(user, toID(target));
+		},
+		searchhelp: [`/adventure search [method] - Looks for a wild Pokemon. Personal; nobody waits for you.`],
+
+		buy(target, room, user) {
+			room = this.requireRoom();
+			const game = this.requireGame(Adventure);
+			if (!target) throw new Chat.ErrorMessage(`Buy what? Use the buttons on the adventure panel.`);
+			game.buy(user, toID(target));
+		},
+		buyhelp: [`/adventure buy [item] - Buys one of something from the Poke Mart here.`],
+
+		deposit: 'box',
+		box(target, room, user) {
+			room = this.requireRoom();
+			const game = this.requireGame(Adventure);
+			if (!target) throw new Chat.ErrorMessage(`Box which Pokemon? Use the buttons on the adventure panel.`);
+			game.deposit(user, target.trim());
+		},
+		boxhelp: [`/adventure box [pokemon] - Moves one of your Pokemon from your party to your box.`],
+
+		withdraw: 'take',
+		take(target, room, user) {
+			room = this.requireRoom();
+			const game = this.requireGame(Adventure);
+			if (!target) throw new Chat.ErrorMessage(`Take which Pokemon? Use the buttons on the adventure panel.`);
+			game.withdraw(user, target.trim());
+		},
+		takehelp: [`/adventure take [pokemon] - Moves one of your Pokemon from your box to your party.`],
+
+		lead(target, room, user) {
+			room = this.requireRoom();
+			const game = this.requireGame(Adventure);
+			if (!target) throw new Chat.ErrorMessage(`Lead with which Pokemon? Use the buttons on the adventure panel.`);
+			game.makeLead(user, target.trim());
+		},
+		leadhelp: [`/adventure lead [pokemon] - Puts one of your Pokemon at the front of your party.`],
+
 		forcevote(target, room, user) {
 			room = this.requireRoom();
 			const game = this.requireGame(Adventure);

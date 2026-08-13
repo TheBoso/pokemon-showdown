@@ -45,8 +45,43 @@ function catchShakes(
 	return shakes;
 }
 
-function ball(name: string, bonus: number, num: number): any {
-	const ballid = toID(name);
+/**
+ * Writes the shared bag back onto every matching move slot, on both the
+ * Pokemon that threw and everyone waiting behind it.
+ *
+ * The Adventure Wild rule paints these slots once at `onBegin`, but PP lives
+ * per slot and the bag is one pool - so after the lead spends the last Poke
+ * Ball, the next Pokemon in still shows a full pocket. `onTryHit` refuses the
+ * throw, which keeps the count honest, but only after the turn is gone. This
+ * makes the button match the bag so it is never offered in the first place.
+ */
+function syncBallSlots(battle: Battle): void {
+	const bag = (battle as any).adventureBalls;
+	if (!bag) return;
+	for (const side of battle.sides) {
+		for (const pokemon of side.pokemon) {
+			for (const slot of pokemon.moveSlots) {
+				const held = bag[slot.id];
+				if (typeof held !== 'number') continue;
+				slot.pp = held;
+				// maxpp of 0 reads as a move with no PP data at all; 1 keeps the
+				// slot rendering as "0/1", which is what an empty pocket is.
+				slot.maxpp = Math.max(1, held);
+			}
+		}
+	}
+}
+
+/**
+ * `ballid` is passed rather than derived from `name`.
+ *
+ * Deriving it would mean calling `toID` at module scope, and `toID` is only a
+ * global because `server/index.ts` installs one - so a data file that needs it
+ * at load time works on a running server and throws anywhere else the dex is
+ * used on its own. Every other data file only ever reaches for `this.toID`
+ * inside a handler, where the battle supplies it.
+ */
+function ball(ballid: string, name: string, bonus: number, num: number): any {
 	return {
 		num: -num,
 		accuracy: true,
@@ -89,6 +124,7 @@ function ball(name: string, bonus: number, num: number): any {
 		onHit(this: Battle, target: Pokemon, source: Pokemon) {
 			const bag = (this as any).adventureBalls;
 			if (bag && bag[ballid] > 0) bag[ballid]--;
+			syncBallSlots(this);
 
 			const rate = (this as any).adventureCatchRate || 45;
 			const shakes = catchShakes(this, target, rate, bonus);
@@ -126,15 +162,15 @@ function ball(name: string, bonus: number, num: number): any {
 }
 
 /**
- * Names deliberately carry no accent. `toID` strips anything outside a-z0-9
- * without normalising first, so "Poké Ball" becomes `pokball` and would not
- * match a `pokeball` key - the move would silently resolve to nothing, which
- * shows up only as NaN PP and a `|cant|nopp|` at the moment of use.
+ * Names deliberately carry no accent. Showdown ids a move by stripping
+ * anything outside a-z0-9 without normalising first, so "Poké Ball" would id
+ * as `pokball` and never match the `pokeball` key here - which shows up only
+ * as NaN PP and a `|cant|nopp|` at the moment somebody tries to throw one.
  */
 export const Moves: import('../../../sim/dex-moves').ModdedMoveDataTable = {
-	pokeball: ball("Poke Ball", 1, 1),
-	greatball: ball("Great Ball", 1.5, 2),
-	ultraball: ball("Ultra Ball", 2, 3),
+	pokeball: ball('pokeball', "Poke Ball", 1, 1),
+	greatball: ball('greatball', "Great Ball", 1.5, 2),
+	ultraball: ball('ultraball', "Ultra Ball", 2, 3),
 	// A Master Ball never fails: a >= 255 short-circuits to four shakes.
-	masterball: ball("Master Ball", 255, 4),
+	masterball: ball('masterball', "Master Ball", 255, 4),
 };

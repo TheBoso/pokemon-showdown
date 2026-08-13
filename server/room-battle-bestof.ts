@@ -310,7 +310,10 @@ export class BestOfGame extends RoomGame<BestOfPlayer> {
 				buf += `<td> vs </td>`;
 				continue;
 			}
-			const team = Teams.unpack(this.players[i].options.team || "");
+			// A team may be handed over as sets rather than as a packed string;
+			// only the packed form needs unpacking.
+			const stored = this.players[i].options.team;
+			const team = typeof stored === 'object' ? stored as PokemonSet[] : Teams.unpack(stored || "");
 			if (!team || !Dex.formats.getRuleTable(this.format).has('teampreview')) {
 				buf += `<td>`;
 				buf += `<psicon pokemon="unknown" /> `.repeat(3);

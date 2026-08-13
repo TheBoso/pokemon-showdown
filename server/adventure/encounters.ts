@@ -15,6 +15,19 @@ export interface Encounter {
 	method: string;
 }
 
+/**
+ * One search button, as offered to a player standing somewhere.
+ *
+ * Lives here rather than in adventure.ts because render.ts needs it and must
+ * not import the game - the dependency runs the other way.
+ */
+export interface SearchOption {
+	method: string;
+	label: string;
+	/** Why the button is shut, if it is. Absent means it works. */
+	locked?: string;
+}
+
 /** The methods a location offers, in the order they should be shown. */
 const METHOD_ORDER = ['land', 'surf', 'rocksmash', 'oldrod', 'goodrod', 'superrod'];
 

@@ -36,13 +36,13 @@ import { PRNG } from '../../sim/prng';
 import { RoomGame, RoomGamePlayer } from '../room-game';
 import { getCampaign, type Campaign, type TrainerData } from './campaigns';
 import { allAdventures, deleteAdventure, saveAdventure } from './storage';
-import { panel } from './render';
+import { panel, type ViewerContext } from './render';
 import { describeAll, meetsAll, unmet } from './progress';
 import {
 	createTrainerBattle, type BattleSideState, type BattleStateReport, type TrainerBattle,
 } from './trainer-battle';
 import { createWildBattle, WildBattle } from './wild-battle';
-import { METHOD_INFO, methodsAt, rollEncounter } from './encounters';
+import { METHOD_INFO, methodsAt, rollEncounter, type SearchOption } from './encounters';
 import { Vote, type VoteOption, type VoteResult } from './vote';
 import {
 	createAdventureState, createPlayerState, createPokemon, healParty, isEveryoneWiped,
@@ -781,7 +781,7 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	 * -------------------------------------------------------------- */
 
 	/** The search buttons one player should see here, and why any are shut. */
-	searchOptions(player: AdventurePlayerState): { method: string, label: string, locked?: string }[] {
+	searchOptions(player: AdventurePlayerState): SearchOption[] {
 		if (['lobby', 'ended'].includes(this.state.phase)) return [];
 
 		const busy = this.wildBattles.has(player.token);
@@ -925,14 +925,123 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	}
 
 	/* -------------------------------------------------------------- *
+	 * Party management
+	 *
+	 * The box is not a filing cabinet: catching with a full party puts a
+	 * Pokemon there, so without a way to swap one back out, catching past six
+	 * would be catching into a hole.
+	 * -------------------------------------------------------------- */
+
+	/**
+	 * True while this player's party is committed to a live battle.
+	 *
+	 * A team crosses into the battle process once, at the start, and the result
+	 * is matched back onto the party by position (`absorbBattleState`). Boxing
+	 * or reordering in between would land the simulator's HP on the wrong
+	 * Pokemon - silently, and only visible several battles later.
+	 */
+	isBattling(token: string): boolean {
+		return this.wildBattles.has(token) || this.battlePlayers.includes(token);
+	}
+
+	/**
+	 * The player behind a personal action, once it is established they are
+	 * allowed to take one. `doing` completes "You can't ... in a battle".
+	 */
+	private actingPlayer(user: User, doing: string): AdventurePlayerState {
+		const player = this.playerTable[user.id]?.state;
+		if (!player) throw new Chat.ErrorMessage(`You are not in this adventure.`);
+		if (this.state.phase === 'lobby') {
+			throw new Chat.ErrorMessage(`The adventure hasn't started yet.`);
+		}
+		if (this.isBattling(player.token)) {
+			throw new Chat.ErrorMessage(`You can't ${doing} in the middle of a battle.`);
+		}
+		return player;
+	}
+
+	/** Finds one of a player's Pokemon by uid, in the party or the box. */
+	private findPokemon(
+		player: AdventurePlayerState, uid: string
+	): { pokemon: PartyPokemon, list: PartyPokemon[], index: number } | null {
+		for (const list of [player.party, player.box]) {
+			const index = list.findIndex(pokemon => pokemon.uid === uid);
+			if (index >= 0) return { pokemon: list[index], list, index };
+		}
+		return null;
+	}
+
+	/** Party -> box. */
+	deposit(user: User, uid: string): void {
+		const player = this.actingPlayer(user, `change your party`);
+		const found = this.findPokemon(player, uid);
+		if (!found || found.list !== player.party) {
+			throw new Chat.ErrorMessage(`That Pokemon isn't in your party.`);
+		}
+		// Somebody has to be able to walk into the next battle.
+		if (player.party.length <= 1) {
+			throw new Chat.ErrorMessage(`You can't box your last Pokemon.`);
+		}
+
+		player.party.splice(found.index, 1);
+		player.box.push(found.pokemon);
+
+		this.save();
+		this.update();
+	}
+
+	/** Box -> party. */
+	withdraw(user: User, uid: string): void {
+		const player = this.actingPlayer(user, `change your party`);
+		const found = this.findPokemon(player, uid);
+		if (!found || found.list !== player.box) {
+			throw new Chat.ErrorMessage(`That Pokemon isn't in your box.`);
+		}
+		if (player.party.length >= this.campaign.manifest.maxPartySize) {
+			throw new Chat.ErrorMessage(`Your party is full. Box someone first.`);
+		}
+
+		player.box.splice(found.index, 1);
+		player.party.push(found.pokemon);
+
+		this.save();
+		this.update();
+	}
+
+	/**
+	 * Moves a party member to the front.
+	 *
+	 * The lead is a real choice: teams are built from the party in order, so
+	 * this decides who is sent out first in every battle from here on.
+	 */
+	makeLead(user: User, uid: string): void {
+		const player = this.actingPlayer(user, `change your party`);
+		const found = this.findPokemon(player, uid);
+		if (!found || found.list !== player.party) {
+			throw new Chat.ErrorMessage(`That Pokemon isn't in your party.`);
+		}
+		if (found.index === 0) return;
+
+		player.party.splice(found.index, 1);
+		player.party.unshift(found.pokemon);
+
+		this.save();
+		this.update();
+	}
+
+	/* -------------------------------------------------------------- *
 	 * Shopping
 	 * -------------------------------------------------------------- */
 
-	/** Buys one of something from the mart here. */
+	/**
+	 * Buys one of something from the mart here.
+	 *
+	 * Barred mid-encounter because the bag is copied into the battle when it
+	 * starts and copied back when it ends, so anything bought in between would
+	 * be silently overwritten by the simulator's count.
+	 */
 	buy(user: User, itemid: string): void {
-		const gamePlayer = this.playerTable[user.id];
-		const player = gamePlayer?.state;
-		if (!player) throw new Chat.ErrorMessage(`You are not in this adventure.`);
+		const player = this.actingPlayer(user, `go shopping`);
 
 		const ball = this.campaign.stockAt(this.state.location).find(entry => entry.id === toID(itemid));
 		if (!ball?.price) throw new Chat.ErrorMessage(`That isn't sold here.`);
@@ -1072,7 +1181,7 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	 */
 	sendPanel(user: User): void {
 		const playerState = this.playerStateFor(user);
-		const html = panel(this.state, this.campaign, playerState, this.vote);
+		const html = panel(this.state, this.campaign, playerState, this.vote, this.viewerContext(playerState));
 		for (const connection of user.connections) {
 			if (connection.openPages?.has(this.pageid)) {
 				connection.send(`>view-${this.pageid}\n|pagehtml|${html}`);
@@ -1082,7 +1191,17 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 
 	/** The panel as HTML, for the page handler to render on first open. */
 	panelFor(user: User): string {
-		return panel(this.state, this.campaign, this.playerStateFor(user), this.vote);
+		const playerState = this.playerStateFor(user);
+		return panel(this.state, this.campaign, playerState, this.vote, this.viewerContext(playerState));
+	}
+
+	/**
+	 * The part of the panel that differs per viewer: which searches are open to
+	 * them, and whether their party is currently frozen in a battle.
+	 */
+	private viewerContext(player: AdventurePlayerState | null): ViewerContext {
+		if (!player) return { search: [], busy: false };
+		return { search: this.searchOptions(player), busy: this.isBattling(player.token) };
 	}
 
 	/** Repaints just one player's panel, e.g. after they pick a starter. */

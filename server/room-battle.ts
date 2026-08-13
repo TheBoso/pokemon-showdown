@@ -462,8 +462,16 @@ export class RoomBattleTimer {
 
 export interface RoomBattlePlayerOptions {
 	user: User;
-	/** should be '' for random teams */
-	team?: string;
+	/**
+	 * should be '' for random teams
+	 *
+	 * May also be an array of sets rather than a packed string: this is only
+	 * ever JSON-serialized into `>player`, and `Battle#getTeam` accepts either
+	 * form. Passing objects is what lets a caller hang extra fields on a set
+	 * and have them survive the trip into the battle process - see
+	 * server/adventure/teams.ts.
+	 */
+	team?: string | AnyObject[];
 	rating?: number;
 	inviteOnly?: boolean;
 	hidden?: boolean;
