@@ -1105,6 +1105,51 @@ export const Rulesets: import('../sim/dex-formats').FormatDataTable = {
 			}
 		},
 	},
+	adventurewild: {
+		effectType: 'Rule',
+		name: 'Adventure Wild',
+		desc: "Marks one side as a wild Pok&eacute;mon and carries the thrower's ball supply in, so Pok&eacute; Balls can be thrown at it.",
+		// Both facts have to reach the battle *process*, and the only channel
+		// into it is the team itself - so the caller hangs an `adventure` blob
+		// on a set and this unpacks it. The alternative, setting the fields on
+		// the battle object from the caller, only works in-process; on a real
+		// server the battle is behind an IPC stream.
+		onBegin() {
+			const battle = this as any;
+			// A ball supply is one pool for the whole battle, not one per
+			// Pokemon: PP lives on a move slot, so switching would otherwise
+			// hand you a fresh pocketful of balls.
+			battle.adventureBalls = {};
+			for (const side of this.sides) {
+				for (const pokemon of side.pokemon) {
+					const info = (pokemon.set as any).adventure;
+					if (!info) continue;
+					if (info.wild) {
+						battle.adventureWildSide = side.id;
+						if (typeof info.catchRate === 'number') battle.adventureCatchRate = info.catchRate;
+					}
+					for (const ballid in info.balls || {}) {
+						battle.adventureBalls[ballid] = info.balls[ballid];
+					}
+				}
+			}
+
+			// Show the bag on the move slot. Without this a ball reads as 40/40
+			// - the move's nominal PP - which tells the player nothing about how
+			// many they are actually carrying. The count here is a snapshot: the
+			// pool above stays authoritative as balls are spent.
+			for (const side of this.sides) {
+				for (const pokemon of side.pokemon) {
+					for (const slot of pokemon.moveSlots) {
+						const held = battle.adventureBalls[slot.id];
+						if (typeof held !== 'number') continue;
+						slot.maxpp = Math.max(1, held);
+						slot.pp = held;
+					}
+				}
+			}
+		},
+	},
 	endlessbattleclause: {
 		effectType: 'Rule',
 		name: 'Endless Battle Clause',

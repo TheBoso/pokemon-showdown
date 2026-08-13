@@ -45,6 +45,17 @@ export interface BattleSideState {
 	moves: string[];
 }
 
+/** Everything `>requeststate` hands back. */
+export interface BattleStateReport {
+	sides: BattleSideState[][];
+	/** Set by a ball move when a wild Pokemon is caught. */
+	caught: { species: string, level: number, hp?: number } | null;
+	/** The thrower's remaining balls, as itemid -> count. */
+	balls: { [itemid: string]: number } | null;
+}
+
+const EMPTY_REPORT: BattleStateReport = { sides: [], caught: null, balls: null };
+
 export interface TrainerBattleOptions {
 	format: string;
 	/** Slots controlled by a human, in order. */
@@ -166,7 +177,7 @@ export class TrainerBattle extends RoomBattle {
 	 * Safe to call after the battle has ended: `RoomBattleStream` is keepAlive,
 	 * so the simulator stays answerable rather than closing on its `end`.
 	 */
-	requestState(): Promise<BattleSideState[][]> {
+	requestState(): Promise<BattleStateReport> {
 		this.dataResolvers ||= [];
 		const answer = new Promise<string[]>((resolve, reject) => {
 			this.dataResolvers!.push([resolve, reject]);
@@ -174,9 +185,10 @@ export class TrainerBattle extends RoomBattle {
 		void this.stream.write(`>requeststate`);
 		return answer.then(lines => {
 			try {
-				return JSON.parse(lines.join('\n')) as BattleSideState[][];
+				const report = JSON.parse(lines.join('\n')) as BattleStateReport;
+				return report?.sides ? report : EMPTY_REPORT;
 			} catch {
-				return [];
+				return EMPTY_REPORT;
 			}
 		});
 	}

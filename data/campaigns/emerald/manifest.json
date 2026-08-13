@@ -19,8 +19,18 @@
 	"maxMoves": 4,
 	"shinyRate": 8192,
 
+	"startBag": { "pokeball": 5 },
+
+	"balls": [
+		{ "id": "pokeball", "name": "Poke Ball", "move": "Poke Ball", "price": 200 },
+		{ "id": "greatball", "name": "Great Ball", "move": "Great Ball", "price": 600 },
+		{ "id": "ultraball", "name": "Ultra Ball", "move": "Ultra Ball", "price": 1200 },
+		{ "id": "masterball", "name": "Master Ball", "move": "Master Ball" }
+	],
+
 	"battleFormat": "gen3adventure",
 	"multiBattleFormat": "gen3adventuremulti",
+	"wildBattleFormat": "gen3adventurewild",
 
 	"data": {
 		"locations": "locations.json",

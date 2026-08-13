@@ -13,7 +13,7 @@
  * that reads it arrives.
  */
 
-import type { TrainerData } from './campaigns';
+import type { BallOption, TrainerData } from './campaigns';
 import { displayName, movePP, type AdventurePlayerState, type PartyPokemon } from './state';
 
 /** A Showdown set plus the runtime state the simulator does not model. */
@@ -37,6 +37,21 @@ export interface AdventureSet extends AnyObject {
 		status: string,
 		sleepTurns: number,
 		pp: number[],
+	};
+	/**
+	 * Wild-battle facts, read by the Adventure Wild ruleset.
+	 *
+	 * These ride on a set because a set is the only thing that crosses into the
+	 * battle process. Setting them on the battle object works in-process and
+	 * silently does nothing on a real server, where the battle is behind an IPC
+	 * stream - a distinction that cost a debugging session to learn.
+	 */
+	adventure?: {
+		/** This Pokemon is the wild one; its side is the one balls may target. */
+		wild?: boolean,
+		catchRate?: number,
+		/** The thrower's bag, as itemid -> count. */
+		balls?: { [itemid: string]: number },
 	};
 }
 
@@ -87,6 +102,39 @@ export function partyToTeam(player: AdventurePlayerState, mod: string): Adventur
 	return player.party
 		.filter(pokemon => pokemon.hp > 0)
 		.map(pokemon => partyPokemonToSet(pokemon, mod));
+}
+
+/**
+ * A player's team for a wild encounter: their party, with balls bolted on.
+ *
+ * Every party member gets the ball moves, because you can throw a ball whoever
+ * is out. The supply itself is not per Pokemon - it is one pool declared once
+ * and enforced inside the battle, so switching does not refill your pockets.
+ */
+export function partyToWildTeam(
+	player: AdventurePlayerState, mod: string, balls: BallOption[]
+): AdventureSet[] {
+	const held: { [itemid: string]: number } = {};
+	for (const ball of balls) {
+		const count = player.bag[ball.id] || 0;
+		if (count > 0) held[ball.id] = count;
+	}
+	const usable = balls.filter(ball => held[ball.id]);
+
+	const team = partyToTeam(player, mod);
+	for (const [index, set] of team.entries()) {
+		set.moves = [...set.moves, ...usable.map(ball => ball.move)];
+		// One declaration is enough, and the lead is the one certain to exist.
+		if (index === 0) set.adventure = { balls: held };
+	}
+	return team;
+}
+
+/** The wild Pokemon's side: one Pokemon, marked catchable. */
+export function wildToTeam(pokemon: PartyPokemon, mod: string, catchRate: number): AdventureSet[] {
+	const set = partyPokemonToSet(pokemon, mod);
+	set.adventure = { wild: true, catchRate };
+	return [set];
 }
 
 /** One trainer roster entry as a set. */

@@ -46,13 +46,18 @@ function catchShakes(
 }
 
 function ball(name: string, bonus: number, num: number): any {
+	const ballid = toID(name);
 	return {
 		num: -num,
 		accuracy: true,
 		basePower: 0,
 		category: "Status",
 		name,
-		pp: 1,
+		// A ceiling, not the real limit: how many you can actually throw is how
+		// many you are carrying, which the Adventure Wild rule writes onto the
+		// move slot so the client shows the true count.
+		pp: 40,
+		noPPBoosts: true,
 		// Balls go first, as they do in the games.
 		priority: 6,
 		flags: { bypasssub: 1 },
@@ -71,9 +76,20 @@ function ball(name: string, bonus: number, num: number): any {
 				this.add('-message', `The trainer blocked the Ball! Don't be a thief!`);
 				return null;
 			}
+			// The bag is one pool shared by the whole party, so it is checked
+			// here rather than left to the move's PP. PP is per move slot, and a
+			// switch would hand the next Pokemon a full set of throws.
+			const bag = (this as any).adventureBalls;
+			if (bag && !(bag[ballid] > 0)) {
+				this.add('-message', `You don't have any ${name}s left!`);
+				return null;
+			}
 			return undefined;
 		},
 		onHit(this: Battle, target: Pokemon, source: Pokemon) {
+			const bag = (this as any).adventureBalls;
+			if (bag && bag[ballid] > 0) bag[ballid]--;
+
 			const rate = (this as any).adventureCatchRate || 45;
 			const shakes = catchShakes(this, target, rate, bonus);
 
@@ -100,6 +116,9 @@ function ball(name: string, bonus: number, num: number): any {
 			(this as any).adventureCaught = {
 				species: target.species.name,
 				level: target.level,
+				// Recorded before the faint below, because a caught Pokemon is
+				// not a beaten one - it keeps whatever HP the ball landed on.
+				hp: target.hp,
 			};
 			target.faint();
 		},

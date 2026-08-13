@@ -5628,7 +5628,13 @@ export const Formats: import('../sim/dex-formats').FormatList = [
 		challengeShow: false,
 		rated: false,
 		battle: { trunc: Math.trunc },
-		ruleset: ['HP Percentage Mod', 'Cancel Mod', 'Max Team Size = 6', 'Max Level = 100', 'Adventure Run State'],
+		// Move count is raised because balls are carried as extra moves on top of
+		// a full four-move set - a Pokemon that already knows four things does not
+		// forget one to hold a Poke Ball.
+		ruleset: [
+			'HP Percentage Mod', 'Cancel Mod', 'Max Team Size = 6', 'Max Move Count = 24',
+			'Max Level = 100', 'Adventure Run State', 'Adventure Wild',
+		],
 	},
 	{
 		// As above, but two players a side against the trainer's two slots.

@@ -38,7 +38,11 @@ import { getCampaign, type Campaign, type TrainerData } from './campaigns';
 import { allAdventures, deleteAdventure, saveAdventure } from './storage';
 import { panel } from './render';
 import { describeAll, meetsAll, unmet } from './progress';
-import { createTrainerBattle, type BattleSideState, type TrainerBattle } from './trainer-battle';
+import {
+	createTrainerBattle, type BattleSideState, type BattleStateReport, type TrainerBattle,
+} from './trainer-battle';
+import { createWildBattle, WildBattle } from './wild-battle';
+import { METHOD_INFO, methodsAt, rollEncounter } from './encounters';
 import { Vote, type VoteOption, type VoteResult } from './vote';
 import {
 	createAdventureState, createPlayerState, createPokemon, healParty, isEveryoneWiped,
@@ -65,6 +69,9 @@ const FIGHT_PREFIX = 'fight:';
  * adventure spectates the sub-room and keeps voting.
  */
 const MAX_BATTLERS = 2;
+
+/** What a battle reports when the simulator could not be asked. */
+const EMPTY_REPORT: BattleStateReport = { sides: [], caught: null, balls: null };
 
 /**
  * A player in the adventure.
@@ -102,6 +109,15 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	battleTrainerId: string | null = null;
 	/** Tokens of whoever is fighting it, so a loss can be applied to them. */
 	battlePlayers: string[] = [];
+	/**
+	 * Live wild encounters, by player token.
+	 *
+	 * Wild battles are personal and unsynced - everyone searches on their own
+	 * button - so several run at once and none of them touches `phase`. This map
+	 * exists to stop one player having two open at the same time, which is the
+	 * only way the button could be abused.
+	 */
+	wildBattles = new Map<string, RoomID>();
 
 	constructor(room: Room, state: AdventureState, campaign: Campaign) {
 		super(room);
@@ -633,25 +649,31 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	 * leaves them standing, so the party has to regroup and come back.
 	 */
 	override onBattleWin(room: GameRoom, winnerid: ID): void {
-		if (this.ended || room.roomid !== this.battleRoomid) return;
+		if (this.ended) return;
+
+		const game = room.game;
+		const isWild = game instanceof WildBattle;
+		if (!isWild && room.roomid !== this.battleRoomid) return;
 
 		// Ask the simulator for its final HP, status and PP before deciding
 		// anything: whether anyone can still fight, and whether the run wipes,
 		// both depend on it. `RoomBattleStream` is keepAlive, so the battle is
 		// still answerable after it has ended.
-		const battle = room.game as TrainerBattle | undefined;
+		const battle = game as TrainerBattle | undefined;
+		const finish = (report: BattleStateReport) => {
+			if (isWild) this.finishWildBattle(room, battle as WildBattle, report);
+			else this.finishBattle(room, winnerid, battle, report);
+		};
+
 		if (typeof battle?.requestState === 'function') {
-			void battle.requestState().then(
-				sides => this.finishBattle(room, winnerid, battle, sides),
-				() => this.finishBattle(room, winnerid, battle, [])
-			);
+			void battle.requestState().then(finish, () => finish(EMPTY_REPORT));
 			return;
 		}
-		this.finishBattle(room, winnerid, battle, []);
+		finish(EMPTY_REPORT);
 	}
 
 	private finishBattle(
-		room: GameRoom, winnerid: ID, battle: TrainerBattle | undefined, sides: BattleSideState[][]
+		room: GameRoom, winnerid: ID, battle: TrainerBattle | undefined, report: BattleStateReport
 	): void {
 		if (this.ended || room.roomid !== this.battleRoomid) return;
 		this.battleRoomid = null;
@@ -659,7 +681,7 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		// Carry damage, status and PP out of the battle before deciding
 		// anything: a party that limped out at 2 HP is not the same as one that
 		// walked out untouched.
-		if (battle && sides.length) this.absorbBattleState(battle, sides);
+		if (battle && report.sides.length) this.absorbBattleState(battle, report.sides);
 
 		const trainerId = this.battleTrainerId;
 		const battlers = this.battlePlayers;
@@ -747,6 +769,182 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 			`|html|<div class="broadcast-red">${who} lost. ` +
 			`Their Pokemon have fainted, and that trainer is still standing.</div>`
 		);
+	}
+
+	/* -------------------------------------------------------------- *
+	 * Wild encounters
+	 *
+	 * Deliberately outside the phase machine. Searching is a personal act on a
+	 * personal button, several players can be mid-encounter at once, and the
+	 * group's vote carries on regardless - so none of this touches `phase` or
+	 * `vote`. That is the whole point of "not synced".
+	 * -------------------------------------------------------------- */
+
+	/** The search buttons one player should see here, and why any are shut. */
+	searchOptions(player: AdventurePlayerState): { method: string, label: string, locked?: string }[] {
+		if (['lobby', 'ended'].includes(this.state.phase)) return [];
+
+		const busy = this.wildBattles.has(player.token);
+		const canFight = player.party.some(pokemon => pokemon.hp > 0);
+
+		return methodsAt(this.campaign, this.state.location).map(method => {
+			const info = METHOD_INFO[method];
+			const missing = info.requires ? unmet(this.state.progress, [info.requires]) : [];
+
+			let locked;
+			if (missing.length) locked = `needs ${describeAll(missing)}`;
+			else if (busy) locked = `you're already in an encounter`;
+			else if (!canFight) locked = `your Pokemon have all fainted`;
+
+			return { method, label: info.label, locked };
+		});
+	}
+
+	/**
+	 * One player looks for a wild Pokemon.
+	 *
+	 * Most searches find nothing - that is the ROM's own encounter rate, not a
+	 * failure - so a miss is reported to that player alone and costs nothing.
+	 */
+	search(user: User, method: string): void {
+		const gamePlayer = this.playerTable[user.id];
+		const player = gamePlayer?.state;
+		if (!player) throw new Chat.ErrorMessage(`You are not in this adventure.`);
+
+		const option = this.searchOptions(player).find(entry => entry.method === method);
+		if (!option) throw new Chat.ErrorMessage(`There is nothing to search for here.`);
+		if (option.locked) throw new Chat.ErrorMessage(`You can't do that: ${option.locked}.`);
+
+		const encounter = rollEncounter(this.campaign, this.state.location, method, this.prng);
+		// The roll happened either way, so the seed moves either way - otherwise
+		// a restart would replay the same misses.
+		this.state.seed = this.prng.getSeed();
+
+		if (!encounter) {
+			this.room.sendUser(
+				user,
+				`|html|<div class="infobox"><small>You search, and find nothing this time.</small></div>`
+			);
+			this.save();
+			return;
+		}
+
+		const battle = createWildBattle({
+			parent: this.room,
+			campaign: this.campaign,
+			player,
+			user,
+			encounter,
+			prng: this.prng,
+			location: this.state.location,
+		});
+		this.state.seed = this.prng.getSeed();
+
+		if (!battle) {
+			this.room.sendUser(user, `|html|<div class="message-error">That encounter could not be started.</div>`);
+			this.save();
+			return;
+		}
+
+		this.wildBattles.set(player.token, battle.roomid);
+		this.room.add(
+			Utils.html`|html|<div class="infobox">${player.name} ran into a wild ` +
+			Utils.html`<strong>${battle.wild.species}</strong> (Lv${battle.wild.level}). ` +
+			`<a href="/${battle.roomid}">Watch</a></div>`
+		);
+		this.save();
+		this.update();
+	}
+
+	/**
+	 * A wild encounter is over: bank the damage, the balls spent, and anything
+	 * caught.
+	 *
+	 * The caught Pokemon is the exact individual that was fought, carried on the
+	 * battle since before it started - not a fresh roll of the same species.
+	 */
+	private finishWildBattle(room: GameRoom, battle: WildBattle | undefined, report: BattleStateReport): void {
+		if (this.ended || !battle) return;
+
+		const token = battle.playerToken;
+		if (this.wildBattles.get(token) === room.roomid) this.wildBattles.delete(token);
+
+		const player = this.state.players[token];
+		if (!player) return;
+
+		if (report.sides.length) this.absorbBattleState(battle, report.sides);
+
+		// The bag is authoritative inside the battle while balls are being
+		// thrown, so it comes back rather than being decremented by guesswork.
+		if (report.balls) {
+			for (const itemid in report.balls) player.bag[itemid] = report.balls[itemid];
+		}
+
+		if (report.caught) {
+			this.addCaught(player, battle, report.caught);
+		} else if (player.party.every(pokemon => pokemon.hp <= 0)) {
+			this.room.add(
+				Utils.html`|html|<div class="broadcast-red">${player.name}'s Pokemon were beaten by the ` +
+				Utils.html`wild ${battle.wild.species}.</div>`
+			);
+		}
+
+		this.save();
+
+		if (isEveryoneWiped(this.state)) {
+			this.whiteOut();
+			return;
+		}
+		this.update();
+	}
+
+	/** Moves a caught Pokemon into the party, or the box when the party is full. */
+	private addCaught(
+		player: AdventurePlayerState, battle: WildBattle, caught: { species: string, level: number, hp?: number }
+	): void {
+		const pokemon = battle.wild;
+		pokemon.originalTrainer = player.token as ID;
+		pokemon.caughtAt = this.state.location;
+		// It was fainted to get it off the field; it is not actually hurt that
+		// badly. `hp` is what it had at the moment the ball landed.
+		pokemon.hp = Math.max(1, Math.min(caught.hp ?? pokemon.maxhp, pokemon.maxhp));
+
+		const boxed = player.party.length >= this.campaign.manifest.maxPartySize;
+		(boxed ? player.box : player.party).push(pokemon);
+
+		this.room.add(
+			Utils.html`|html|<div class="broadcast-green">${player.name} caught a ` +
+			Utils.html`${pokemon.shiny ? 'shiny ' : ''}${pokemon.species}!</div>`
+		);
+		if (boxed) {
+			this.room.add(
+				Utils.html`|html|<div class="infobox"><small>${player.name}'s party is full, so it went ` +
+				`to the box.</small></div>`
+			);
+		}
+	}
+
+	/* -------------------------------------------------------------- *
+	 * Shopping
+	 * -------------------------------------------------------------- */
+
+	/** Buys one of something from the mart here. */
+	buy(user: User, itemid: string): void {
+		const gamePlayer = this.playerTable[user.id];
+		const player = gamePlayer?.state;
+		if (!player) throw new Chat.ErrorMessage(`You are not in this adventure.`);
+
+		const ball = this.campaign.stockAt(this.state.location).find(entry => entry.id === toID(itemid));
+		if (!ball?.price) throw new Chat.ErrorMessage(`That isn't sold here.`);
+		if (player.money < ball.price) {
+			throw new Chat.ErrorMessage(`A ${ball.name} costs $${ball.price}; you have $${player.money}.`);
+		}
+
+		player.money -= ball.price;
+		player.bag[ball.id] = (player.bag[ball.id] || 0) + 1;
+
+		this.save();
+		this.sendPanel(user);
 	}
 
 	/**

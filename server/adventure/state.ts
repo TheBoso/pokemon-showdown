@@ -18,7 +18,7 @@ import type { Campaign } from './campaigns';
 import { emptyProgress, type Progress } from './progress';
 
 /** Bumped whenever the on-disk shape changes; see storage.ts for migrations. */
-export const STATE_VERSION = 4;
+export const STATE_VERSION = 5;
 
 export type AdventurePhase =
 	/** Gathering players; everyone picks a starter. */
@@ -343,7 +343,7 @@ export function createPlayerState(user: User, campaign: Campaign): AdventurePlay
 		name: user.name,
 		party: [],
 		box: [],
-		bag: {},
+		bag: { ...campaign.manifest.startBag },
 		money: campaign.manifest.startMoney,
 		battlesFought: 0,
 		lastBattleAt: 0,

@@ -10,6 +10,7 @@
  */
 
 import { FS } from '../../lib';
+import { getCampaign } from './campaigns';
 import { STATE_VERSION, type AdventureState } from './state';
 
 const SAVE_FILE = 'databases/adventures.json';
@@ -60,6 +61,23 @@ function migrate(state: AdventureState): AdventureState | null {
 		// answer than sending everyone home to the start town.
 		(state as AnyObject).lastPokecenter = state.location;
 		state.version = 4;
+	}
+
+	if (state.version === 4) {
+		// v5 gave everyone a bag with balls in it. An adventure that predates
+		// catching has an empty one, and handing out the starting supply is
+		// friendlier than telling players to walk to a shop for something the
+		// game would have given them at the door.
+		const startBag = getCampaign(state.campaign)?.manifest.startBag;
+		if (startBag) {
+			for (const player of Object.values(state.players || {})) {
+				player.bag ||= {};
+				for (const itemid in startBag) {
+					if (!player.bag[itemid]) player.bag[itemid] = startBag[itemid];
+				}
+			}
+		}
+		state.version = 5;
 	}
 
 	return state.version === STATE_VERSION ? state : null;

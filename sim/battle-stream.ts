@@ -210,19 +210,28 @@ export class BattleStream extends Streams.ObjectReadWriteStream<string> {
 			// Live HP, status and PP for every side, so a caller running a
 			// campaign can carry damage out of the battle. `requestteam` cannot
 			// serve this: a packed team has nowhere to put current state.
-			this.push(`requesteddata\n${JSON.stringify(this.battle!.sides.map(
-				battleSide => battleSide.pokemon.map(pokemon => ({
-					name: pokemon.set.name,
-					species: pokemon.species.name,
-					hp: pokemon.hp,
-					maxhp: pokemon.maxhp,
-					fainted: pokemon.fainted,
-					status: pokemon.status,
-					statusTurns: pokemon.statusState?.time || 0,
-					pp: pokemon.moveSlots.map(moveSlot => moveSlot.pp),
-					moves: pokemon.moveSlots.map(moveSlot => moveSlot.id),
-				}))
-			))}`);
+			//
+			// `caught` and `balls` are set by the campaign's own rules and moves.
+			// They ride along here rather than on a verb of their own because the
+			// caller wants them at the same moment it wants the HP - once, when
+			// the battle is over - and one round trip is cheaper than two.
+			this.push(`requesteddata\n${JSON.stringify({
+				sides: this.battle!.sides.map(
+					battleSide => battleSide.pokemon.map(pokemon => ({
+						name: pokemon.set.name,
+						species: pokemon.species.name,
+						hp: pokemon.hp,
+						maxhp: pokemon.maxhp,
+						fainted: pokemon.fainted,
+						status: pokemon.status,
+						statusTurns: pokemon.statusState?.time || 0,
+						pp: pokemon.moveSlots.map(moveSlot => moveSlot.pp),
+						moves: pokemon.moveSlots.map(moveSlot => moveSlot.id),
+					}))
+				),
+				caught: (this.battle as any).adventureCaught || null,
+				balls: (this.battle as any).adventureBalls || null,
+			})}`);
 			break;
 		case 'show-openteamsheets':
 			this.battle!.showOpenTeamSheets();

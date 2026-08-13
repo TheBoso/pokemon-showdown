@@ -33,6 +33,21 @@ export interface StarterOption {
 	blurb: string;
 }
 
+/**
+ * One kind of Poke Ball.
+ *
+ * `move` is the move the campaign's mod exposes for throwing it - balls are
+ * modelled as moves so a throw takes a turn inside the simulator's own turn
+ * order. A ball with no `price` is not sold anywhere; that is how the Master
+ * Ball stays a story reward rather than a purchase.
+ */
+export interface BallOption {
+	id: string;
+	name: string;
+	move: string;
+	price?: number;
+}
+
 export interface CampaignManifest {
 	id: string;
 	name: string;
@@ -51,10 +66,17 @@ export interface CampaignManifest {
 	/** Denominator of the shiny chance: 8192 in gen 3. */
 	shinyRate: number;
 
+	/** What every player starts carrying, as itemid -> count. */
+	startBag?: { [itemid: string]: number };
+	/** Catching gear, weakest first. */
+	balls?: BallOption[];
+
 	/** Showdown format id for a one-player-a-side trainer battle. */
 	battleFormat: string;
 	/** Showdown format id for two players a side. */
 	multiBattleFormat: string;
+	/** Showdown format id for one player against one wild Pokemon. */
+	wildBattleFormat?: string;
 
 	data: {
 		locations?: string,
@@ -501,6 +523,23 @@ export class Campaign {
 	/** Catch rate, base EXP and growth curve - none of which Showdown's dex carries. */
 	extraFor(species: string): SpeciesExtra | null {
 		return this.speciesExtra()?.[toID(species)] || null;
+	}
+
+	/** Every ball this game has, weakest first. */
+	balls(): BallOption[] {
+		return this.manifest.balls || [];
+	}
+
+	ball(itemid: string): BallOption | null {
+		return this.balls().find(entry => entry.id === toID(itemid)) || null;
+	}
+
+	/** What a location sells, as ball entries. Items we can't use yet are skipped. */
+	stockAt(locationId: string): BallOption[] {
+		const stock = this.location(locationId)?.pokemart || [];
+		return stock
+			.map(itemid => this.ball(itemid))
+			.filter((entry): entry is BallOption => !!entry?.price);
 	}
 
 	/** Drops cached data so regenerated files can be picked up without a restart. */
