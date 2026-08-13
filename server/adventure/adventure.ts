@@ -106,8 +106,13 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	vote: Vote | null = null;
 	/** The live battle sub-room, if one is running. */
 	battleRoomid: RoomID | null = null;
-	/** Who that battle is against, so its result can be recorded. */
-	battleTrainerId: string | null = null;
+	/**
+	 * Who that battle is against, so its result can be recorded.
+	 *
+	 * Two when a pair of trainers is fought together, which is the norm with
+	 * two players - and then beating them clears both.
+	 */
+	battleTrainerIds: string[] = [];
 	/** Tokens of whoever is fighting it, so a loss can be applied to them. */
 	battlePlayers: string[] = [];
 	/**
@@ -470,6 +475,26 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 			.filter(entry => !this.state.defeatedTrainers.includes(entry.id));
 	}
 
+	/**
+	 * Who the party faces if they take this fight.
+	 *
+	 * With two players it is a multi battle, and trainers come in pairs: the
+	 * next two on the route stand together, then the next two, and so on. A
+	 * route with an odd number leaves the last one to fight alone - which the
+	 * battle handles by splitting their roster across both slots, or by
+	 * seating an already-fainted stand-in if they own a single Pokemon.
+	 *
+	 * Shared by the ballot and the battle, so the button cannot promise one
+	 * opponent and the fight deliver two.
+	 */
+	trainerLineup(
+		lead: { id: string, trainer: TrainerData }, battlers: number
+	): { id: string, trainer: TrainerData }[] {
+		if (battlers < 2) return [lead];
+		const partner = this.remainingTrainers().find(candidate => candidate.id !== lead.id);
+		return partner ? [lead, partner] : [lead];
+	}
+
 	travelOptions(): VoteOption[] {
 		const options: VoteOption[] = [];
 		const here = this.here;
@@ -483,10 +508,16 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		// is the only way forward.
 		if (remaining.length) {
 			const next = remaining[0];
+			const lineup = this.trainerLineup(next, this.electBattlers().length);
+			const label = lineup
+				.map(candidate => `${candidate.trainer.trainerClass} ${candidate.trainer.name}`)
+				.join(' & ');
 			options.push({
 				id: `${FIGHT_PREFIX}${next.id}`,
-				label: `Battle ${next.trainer.trainerClass} ${next.trainer.name}`,
-				detail: remaining.length > 1 ? `${remaining.length} trainers left here` : `last one here`,
+				label: `Battle ${label}`,
+				detail: lineup.length > 1 ?
+					`together - ${remaining.length} left here` :
+					(remaining.length > 1 ? `${remaining.length} trainers left here` : `last one here`),
 				locked: canFight ? undefined : `nobody has a Pokemon left`,
 			});
 		}
@@ -644,13 +675,14 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 			return;
 		}
 
-		// Everyone who can fight, fights. Two players always share a side - the
-		// battle fills the fourth slot itself when the trainer cannot, so there
-		// is no roster that forces one of them to sit a fight out.
+		// Everyone who can fight, fights. Two players always share a side, and
+		// the battle fills the fourth slot itself when the line-up cannot, so
+		// no roster forces one of them to sit a fight out.
+		const lineup = this.trainerLineup(entry, online.length);
 		const battle = createTrainerBattle({
 			parent: this.room,
 			campaign: this.campaign,
-			trainer: entry.trainer,
+			trainers: lineup.map(candidate => candidate.trainer),
 			players: online,
 			seed: this.prng.getSeed(),
 		});
@@ -662,7 +694,7 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 
 		this.state.phase = 'battle';
 		this.battleRoomid = battle.roomid;
-		this.battleTrainerId = entry.id;
+		this.battleTrainerIds = lineup.map(candidate => candidate.id);
 		this.battlePlayers = online.map(pair => pair.player.token);
 		for (const { player } of online) {
 			player.battlesFought++;
@@ -670,9 +702,12 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		}
 
 		const names = online.map(pair => pair.player.name).join(' and ');
+		const against = lineup
+			.map(candidate => `${candidate.trainer.trainerClass} ${candidate.trainer.name}`)
+			.join(' and ');
 		this.room.add(
 			Utils.html`|html|<div class="infobox"><strong>${names}</strong> take on ` +
-			Utils.html`${entry.trainer.trainerClass} ${entry.trainer.name}! ` +
+			Utils.html`${against}! ` +
 			`<a href="/${battle.roomid}">Watch</a></div>`
 		);
 		this.save();
@@ -727,18 +762,26 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		if (battle && report.sides.length) this.absorbBattleState(battle, report.sides);
 		if (battle && sent) this.awardExp(battle, sent, true);
 
-		const trainerId = this.battleTrainerId;
+		const trainerIds = this.battleTrainerIds;
 		const battlers = this.battlePlayers;
-		this.battleTrainerId = null;
+		this.battleTrainerIds = [];
 		this.battlePlayers = [];
 		const won = !!winnerid && !!this.state.playerTokens[winnerid];
 
-		if (won && trainerId && !this.state.defeatedTrainers.includes(trainerId)) {
-			this.state.defeatedTrainers.push(trainerId);
-			const trainer = this.campaign.trainer(trainerId);
-			this.room.add(
-				Utils.html`|html|<div class="broadcast-green">${trainer?.name || 'The trainer'} was defeated!</div>`
-			);
+		if (won && trainerIds.length) {
+			// A pair goes down together: they were one fight.
+			const beaten: string[] = [];
+			for (const trainerId of trainerIds) {
+				if (this.state.defeatedTrainers.includes(trainerId)) continue;
+				this.state.defeatedTrainers.push(trainerId);
+				beaten.push(this.campaign.trainer(trainerId)?.name || 'The trainer');
+			}
+			if (beaten.length) {
+				this.room.add(
+					Utils.html`|html|<div class="broadcast-green">${beaten.join(' and ')} ` +
+					`${beaten.length > 1 ? 'were' : 'was'} defeated!</div>`
+				);
+			}
 		} else {
 			this.applyDefeat(battlers);
 		}
