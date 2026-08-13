@@ -13,6 +13,9 @@ npm-debug.log
 .eslintcache-no-types
 /tools/set-import/sets
 databases/*.db*
+# Live run state. Holds the userid and display name of everyone who has played,
+# so it must never be committed - this is a public fork.
+databases/adventures.json
 *.o
 *.o.dSYM
 # Typescript build artifacts

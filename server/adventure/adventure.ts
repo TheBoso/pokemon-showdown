@@ -106,8 +106,13 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	vote: Vote | null = null;
 	/** The live battle sub-room, if one is running. */
 	battleRoomid: RoomID | null = null;
-	/** Who that battle is against, so its result can be recorded. */
-	battleTrainerId: string | null = null;
+	/**
+	 * Who that battle is against, so its result can be recorded.
+	 *
+	 * Usually one, but two when a pair of trainers had to be put together to
+	 * fill a multi battle's four slots - and then beating them clears both.
+	 */
+	battleTrainerIds: string[] = [];
 	/** Tokens of whoever is fighting it, so a loss can be applied to them. */
 	battlePlayers: string[] = [];
 	/**
@@ -470,6 +475,22 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 			.filter(entry => !this.state.defeatedTrainers.includes(entry.id));
 	}
 
+	/**
+	 * Who the party would actually face if they took this fight.
+	 *
+	 * A multi battle needs four filled slots, so two players against a trainer
+	 * with a single Pokemon means bringing the next trainer along too. Shared
+	 * by the ballot and the battle, so the button cannot promise one opponent
+	 * and the fight deliver two.
+	 */
+	trainerLineup(
+		lead: { id: string, trainer: TrainerData }, battlers: number
+	): { id: string, trainer: TrainerData }[] {
+		if (battlers < 2 || lead.trainer.team.length >= 2) return [lead];
+		const partner = this.remainingTrainers().find(candidate => candidate.id !== lead.id);
+		return partner ? [lead, partner] : [lead];
+	}
+
 	travelOptions(): VoteOption[] {
 		const options: VoteOption[] = [];
 		const here = this.here;
@@ -483,10 +504,16 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		// is the only way forward.
 		if (remaining.length) {
 			const next = remaining[0];
+			const lineup = this.trainerLineup(next, this.electBattlers().length);
+			const label = lineup
+				.map(candidate => `${candidate.trainer.trainerClass} ${candidate.trainer.name}`)
+				.join(' & ');
 			options.push({
 				id: `${FIGHT_PREFIX}${next.id}`,
-				label: `Battle ${next.trainer.trainerClass} ${next.trainer.name}`,
-				detail: remaining.length > 1 ? `${remaining.length} trainers left here` : `last one here`,
+				label: `Battle ${label}`,
+				detail: lineup.length > 1 ?
+					`both at once - ${remaining.length} left here` :
+					(remaining.length > 1 ? `${remaining.length} trainers left here` : `last one here`),
 				locked: canFight ? undefined : `nobody has a Pokemon left`,
 			});
 		}
@@ -633,7 +660,7 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 			return;
 		}
 
-		const online = battlers
+		let online = battlers
 			.map(player => ({ player, user: Users.getExact(player.userid) }))
 			.filter((pair): pair is { player: AdventurePlayerState, user: User } => !!pair.user);
 		if (!online.length) {
@@ -644,10 +671,29 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 			return;
 		}
 
+		/*
+		 * Two players means a multi battle, and a multi battle needs all four
+		 * slots filled - the simulator waits for `>player p4` and never starts
+		 * without it, silently. A trainer with two or more Pokemon covers both
+		 * slots alone; a trainer with only one (36% of Emerald's) cannot, and
+		 * has to bring somebody with them.
+		 *
+		 * Pairing them with the next trainer on the route is what Emerald does
+		 * for its own tag battles, and it beats the alternatives: handing a
+		 * trainer a second Pokemon they do not own, or making the two players
+		 * take turns while the other watches.
+		 */
+		const lineup = this.trainerLineup(entry, online.length);
+		if (online.length > 1 && lineup.length < 2) {
+			// The last trainer on a route, one Pokemon, nobody to stand beside
+			// them. Fought one-on-one rather than not at all.
+			online = online.slice(0, 1);
+		}
+
 		const battle = createTrainerBattle({
 			parent: this.room,
 			campaign: this.campaign,
-			trainer: entry.trainer,
+			trainers: lineup.map(candidate => candidate.trainer),
 			players: online,
 			seed: this.prng.getSeed(),
 		});
@@ -659,7 +705,7 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 
 		this.state.phase = 'battle';
 		this.battleRoomid = battle.roomid;
-		this.battleTrainerId = entry.id;
+		this.battleTrainerIds = lineup.map(candidate => candidate.id);
 		this.battlePlayers = online.map(pair => pair.player.token);
 		for (const { player } of online) {
 			player.battlesFought++;
@@ -667,9 +713,12 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		}
 
 		const names = online.map(pair => pair.player.name).join(' and ');
+		const against = lineup
+			.map(candidate => `${candidate.trainer.trainerClass} ${candidate.trainer.name}`)
+			.join(' and ');
 		this.room.add(
 			Utils.html`|html|<div class="infobox"><strong>${names}</strong> take on ` +
-			Utils.html`${entry.trainer.trainerClass} ${entry.trainer.name}! ` +
+			Utils.html`${against}! ` +
 			`<a href="/${battle.roomid}">Watch</a></div>`
 		);
 		this.save();
@@ -724,18 +773,26 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		if (battle && report.sides.length) this.absorbBattleState(battle, report.sides);
 		if (battle && sent) this.awardExp(battle, sent, true);
 
-		const trainerId = this.battleTrainerId;
+		const trainerIds = this.battleTrainerIds;
 		const battlers = this.battlePlayers;
-		this.battleTrainerId = null;
+		this.battleTrainerIds = [];
 		this.battlePlayers = [];
 		const won = !!winnerid && !!this.state.playerTokens[winnerid];
 
-		if (won && trainerId && !this.state.defeatedTrainers.includes(trainerId)) {
-			this.state.defeatedTrainers.push(trainerId);
-			const trainer = this.campaign.trainer(trainerId);
-			this.room.add(
-				Utils.html`|html|<div class="broadcast-green">${trainer?.name || 'The trainer'} was defeated!</div>`
-			);
+		if (won && trainerIds.length) {
+			// A tag pair goes down together: they were one fight.
+			const beaten: string[] = [];
+			for (const trainerId of trainerIds) {
+				if (this.state.defeatedTrainers.includes(trainerId)) continue;
+				this.state.defeatedTrainers.push(trainerId);
+				beaten.push(this.campaign.trainer(trainerId)?.name || 'The trainer');
+			}
+			if (beaten.length) {
+				this.room.add(
+					Utils.html`|html|<div class="broadcast-green">${beaten.join(' and ')} ` +
+					`${beaten.length > 1 ? 'were' : 'was'} defeated!</div>`
+				);
+			}
 		} else {
 			this.applyDefeat(battlers);
 		}
