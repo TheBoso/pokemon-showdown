@@ -5619,6 +5619,18 @@ export const Formats: import('../sim/dex-formats').FormatList = [
 		ruleset: ['HP Percentage Mod', 'Cancel Mod', 'Max Team Size = 6', 'Max Level = 100', 'Adventure Run State'],
 	},
 	{
+		// A wild encounter: one player against one wild Pokemon, with Poke Balls
+		// available as moves. Runs under gen3adventure, which is gen 3 plus
+		// those balls.
+		name: "[Gen 3] Adventure Wild",
+		mod: 'gen3adventure',
+		searchShow: false,
+		challengeShow: false,
+		rated: false,
+		battle: { trunc: Math.trunc },
+		ruleset: ['HP Percentage Mod', 'Cancel Mod', 'Max Team Size = 6', 'Max Level = 100', 'Adventure Run State'],
+	},
+	{
 		// As above, but two players a side against the trainer's two slots.
 		name: "[Gen 3] Adventure Multi",
 		mod: 'gen3',

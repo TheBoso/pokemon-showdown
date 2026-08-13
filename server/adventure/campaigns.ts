@@ -273,15 +273,23 @@ export interface EncounterEntry {
 	species: string;
 	minLevel: number;
 	maxLevel: number;
-	/** Relative weight within its method. */
+	/** Share of this method's encounters, as a percentage totalling 100. */
 	rate: number;
 }
 
+export interface EncounterMethod {
+	/** Roughly how often a search finds anything at all, out of 100. */
+	rate: number;
+	slots: EncounterEntry[];
+}
+
+/** Method name (`land`, `surf`, `oldrod`, ...) -> what turns up. */
 export interface EncounterTable {
-	[method: string]: EncounterEntry[];
+	[method: string]: EncounterMethod;
 }
 
 export interface SpeciesExtra {
+	/** 0-255; higher is easier to catch. */
 	catchRate: number;
 	baseExp: number;
 	growthRate: string;
@@ -469,16 +477,25 @@ export class Campaign {
 			.map(id => ({ id, trainer: trainers[id] }));
 	}
 
-	encounters(): { [table: string]: EncounterTable } | null {
-		return this.load('encounters');
+	encounters(): { [locationId: string]: EncounterTable } | null {
+		return this.load<{ tables: { [locationId: string]: EncounterTable } }>('encounters')?.tables || null;
 	}
 
-	encounterTable(id: string): EncounterTable | null {
-		return this.encounters()?.[id] || null;
+	/** What can be found at a location, by method. */
+	encounterTable(locationId: string): EncounterTable | null {
+		const override = this.location(locationId)?.encounters;
+		const tables = this.encounters();
+		if (!tables) return null;
+		return tables[locationId] || (override ? tables[override] : null) || null;
+	}
+
+	/** The methods available at a location, e.g. ['land', 'surf']. */
+	encounterMethods(locationId: string): string[] {
+		return Object.keys(this.encounterTable(locationId) || {});
 	}
 
 	speciesExtra(): { [speciesid: string]: SpeciesExtra } | null {
-		return this.load('speciesExtra');
+		return this.load<{ species: { [id: string]: SpeciesExtra } }>('speciesExtra')?.species || null;
 	}
 
 	/** Catch rate, base EXP and growth curve - none of which Showdown's dex carries. */
