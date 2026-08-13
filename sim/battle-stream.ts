@@ -206,6 +206,24 @@ export class BattleStream extends Streams.ObjectReadWriteStream<string> {
 			const team = Teams.pack(side.team);
 			this.push(`requesteddata\n${team}`);
 			break;
+		case 'requeststate':
+			// Live HP, status and PP for every side, so a caller running a
+			// campaign can carry damage out of the battle. `requestteam` cannot
+			// serve this: a packed team has nowhere to put current state.
+			this.push(`requesteddata\n${JSON.stringify(this.battle!.sides.map(
+				battleSide => battleSide.pokemon.map(pokemon => ({
+					name: pokemon.set.name,
+					species: pokemon.species.name,
+					hp: pokemon.hp,
+					maxhp: pokemon.maxhp,
+					fainted: pokemon.fainted,
+					status: pokemon.status,
+					statusTurns: pokemon.statusState?.time || 0,
+					pp: pokemon.moveSlots.map(moveSlot => moveSlot.pp),
+					moves: pokemon.moveSlots.map(moveSlot => moveSlot.id),
+				}))
+			))}`);
+			break;
 		case 'show-openteamsheets':
 			this.battle!.showOpenTeamSheets();
 			break;

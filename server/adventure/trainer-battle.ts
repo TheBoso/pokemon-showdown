@@ -32,6 +32,19 @@ export interface TrainerSlot {
 	team: AdventureSet[];
 }
 
+/** One Pokemon's condition as the simulator sees it, from `>requeststate`. */
+export interface BattleSideState {
+	name: string;
+	species: string;
+	hp: number;
+	maxhp: number;
+	fainted: boolean;
+	status: string;
+	statusTurns: number;
+	pp: number[];
+	moves: string[];
+}
+
 export interface TrainerBattleOptions {
 	format: string;
 	/** Slots controlled by a human, in order. */
@@ -67,6 +80,8 @@ export class TrainerBattle extends RoomBattle {
 	prng: PRNG;
 	aiFlags: string[];
 	mod: string;
+	/** Side index (0-based) -> player token, for mapping results back. */
+	playerSides = new Map<number, string>();
 
 	constructor(room: GameRoom, options: RoomBattleOptions, trainer: TrainerBattleOptions) {
 		super(room, options);
@@ -139,6 +154,31 @@ export class TrainerBattle extends RoomBattle {
 				if (view) view.hpFraction = 0;
 			}
 		}
+	}
+
+	/**
+	 * Live HP, status and PP for every side, straight from the simulator.
+	 *
+	 * The battle runs in a child process, so this is a round trip: push a
+	 * resolver, write the request, and `receive` hands the answer back when
+	 * `requesteddata` arrives.
+	 *
+	 * Safe to call after the battle has ended: `RoomBattleStream` is keepAlive,
+	 * so the simulator stays answerable rather than closing on its `end`.
+	 */
+	requestState(): Promise<BattleSideState[][]> {
+		this.dataResolvers ||= [];
+		const answer = new Promise<string[]>((resolve, reject) => {
+			this.dataResolvers!.push([resolve, reject]);
+		});
+		void this.stream.write(`>requeststate`);
+		return answer.then(lines => {
+			try {
+				return JSON.parse(lines.join('\n')) as BattleSideState[][];
+			} catch {
+				return [];
+			}
+		});
 	}
 
 	override receive(lines: string[]): void {
@@ -228,6 +268,10 @@ export function createTrainerBattle(options: {
 	players[0] = { user: humans[0].user, team: partyToTeam(humans[0].player, mod) };
 	if (isMulti) players[2] = { user: humans[1].user, team: partyToTeam(humans[1].player, mod) };
 
+	// Side indexes are 0-based: p1 is 0, p3 is 2.
+	const playerSides = new Map<number, string>([[0, humans[0].player.token]]);
+	if (isMulti) playerSides.set(2, humans[1].player.token);
+
 	const title = `${trainer.trainerClass} ${trainer.name}`;
 	const roomid = Rooms.global.prepBattleRoom(format);
 
@@ -259,6 +303,7 @@ export function createTrainerBattle(options: {
 		flags: trainer.ai,
 		seed: options.seed,
 	});
+	battle.playerSides = playerSides;
 	room.game = battle;
 	room.battle = battle;
 	room.setParent(parent);

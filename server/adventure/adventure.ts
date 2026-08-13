@@ -38,11 +38,11 @@ import { getCampaign, type Campaign, type TrainerData } from './campaigns';
 import { allAdventures, deleteAdventure, saveAdventure } from './storage';
 import { panel } from './render';
 import { describeAll, meetsAll, unmet } from './progress';
-import { createTrainerBattle } from './trainer-battle';
+import { createTrainerBattle, type BattleSideState, type TrainerBattle } from './trainer-battle';
 import { Vote, type VoteOption, type VoteResult } from './vote';
 import {
 	createAdventureState, createPlayerState, createPokemon, healParty, isEveryoneWiped,
-	type AdventurePlayerState, type AdventureState,
+	type AdventurePlayerState, type AdventureState, type PartyPokemon,
 } from './state';
 
 /** How long an untouched lobby sticks around before it cleans itself up. */
@@ -634,7 +634,32 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	 */
 	override onBattleWin(room: GameRoom, winnerid: ID): void {
 		if (this.ended || room.roomid !== this.battleRoomid) return;
+
+		// Ask the simulator for its final HP, status and PP before deciding
+		// anything: whether anyone can still fight, and whether the run wipes,
+		// both depend on it. `RoomBattleStream` is keepAlive, so the battle is
+		// still answerable after it has ended.
+		const battle = room.game as TrainerBattle | undefined;
+		if (typeof battle?.requestState === 'function') {
+			void battle.requestState().then(
+				sides => this.finishBattle(room, winnerid, battle, sides),
+				() => this.finishBattle(room, winnerid, battle, [])
+			);
+			return;
+		}
+		this.finishBattle(room, winnerid, battle, []);
+	}
+
+	private finishBattle(
+		room: GameRoom, winnerid: ID, battle: TrainerBattle | undefined, sides: BattleSideState[][]
+	): void {
+		if (this.ended || room.roomid !== this.battleRoomid) return;
 		this.battleRoomid = null;
+
+		// Carry damage, status and PP out of the battle before deciding
+		// anything: a party that limped out at 2 HP is not the same as one that
+		// walked out untouched.
+		if (battle && sides.length) this.absorbBattleState(battle, sides);
 
 		const trainerId = this.battleTrainerId;
 		const battlers = this.battlePlayers;
@@ -663,6 +688,38 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 			return;
 		}
 		this.openTravelVote();
+	}
+
+	/**
+	 * Writes the simulator's final HP, status and PP back onto the parties.
+	 *
+	 * Matched by position: the team handed to a side was built from that
+	 * player's living party in order, so side.pokemon[i] is that same Pokemon.
+	 * Fainted party members were left out of the team, so they are skipped here
+	 * too and keep their 0 HP.
+	 */
+	private absorbBattleState(battle: TrainerBattle, sides: BattleSideState[][]): void {
+		for (const [sideIndex, token] of battle.playerSides) {
+			const player = this.state.players[token];
+			const condition = sides[sideIndex];
+			if (!player || !condition) continue;
+
+			const sent = player.party.filter(pokemon => pokemon.hp > 0);
+			for (const [index, pokemon] of sent.entries()) {
+				const after = condition[index];
+				if (!after) continue;
+
+				pokemon.hp = after.fainted ? 0 : Math.max(0, Math.min(after.hp, pokemon.maxhp));
+				pokemon.status = (after.fainted ? '' : after.status || '') as PartyPokemon['status'];
+				pokemon.sleepTurns = pokemon.status === 'slp' ? after.statusTurns || 0 : 0;
+
+				if (Array.isArray(after.pp)) {
+					for (let slot = 0; slot < pokemon.pp.length; slot++) {
+						if (typeof after.pp[slot] === 'number') pokemon.pp[slot] = after.pp[slot];
+					}
+				}
+			}
+		}
 	}
 
 	/**

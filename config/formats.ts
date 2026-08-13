@@ -5616,7 +5616,7 @@ export const Formats: import('../sim/dex-formats').FormatList = [
 		challengeShow: false,
 		rated: false,
 		battle: { trunc: Math.trunc },
-		ruleset: ['HP Percentage Mod', 'Cancel Mod', 'Max Team Size = 6', 'Max Level = 100'],
+		ruleset: ['HP Percentage Mod', 'Cancel Mod', 'Max Team Size = 6', 'Max Level = 100', 'Adventure Run State'],
 	},
 	{
 		// As above, but two players a side against the trainer's two slots.
@@ -5627,7 +5627,7 @@ export const Formats: import('../sim/dex-formats').FormatList = [
 		challengeShow: false,
 		rated: false,
 		battle: { trunc: Math.trunc },
-		ruleset: ['HP Percentage Mod', 'Cancel Mod', 'Max Team Size = 6', 'Max Level = 100'],
+		ruleset: ['HP Percentage Mod', 'Cancel Mod', 'Max Team Size = 6', 'Max Level = 100', 'Adventure Run State'],
 	},
 	{
 		name: "[Gen 3] Doubles Custom Game",

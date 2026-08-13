@@ -1057,6 +1057,54 @@ export const Rulesets: import('../sim/dex-formats').FormatDataTable = {
 			this.add('rule', 'Gravity Sleep Clause: The combination of sleep-inducing moves with imperfect accuracy and Gravity or Gigantamax Orbeetle are banned');
 		},
 	},
+	adventurerunstate: {
+		effectType: 'Rule',
+		name: 'Adventure Run State',
+		desc: "Carries HP, status and PP into the battle from each Pok&eacute;mon's set, for co-op playthroughs where damage persists between fights.",
+		// The caller attaches a `runState` object to each set. Sets reach the
+		// simulator as objects rather than packed strings (`Battle#getTeam`
+		// accepts either), so extra fields survive the trip into the battle
+		// process, where a packed team would have dropped them.
+		onBegin() {
+			for (const side of this.sides) {
+				for (const pokemon of side.pokemon) {
+					const runState = (pokemon.set as any).runState;
+					if (!runState || typeof runState.hp !== 'number') continue;
+					// maxhp of 0 marks a set with no carried state - a trainer's,
+					// or a freshly generated wild Pokemon.
+					if (!runState.maxhp) continue;
+
+					pokemon.hp = Math.max(0, Math.min(Math.floor(runState.hp), pokemon.maxhp));
+					if (!pokemon.hp) {
+						pokemon.fainted = true;
+					} else if (runState.status) {
+						// Deliberately not `setStatus`: it refuses while nothing is
+						// active (`if (!this.isActive && status) return false`), and
+						// nothing is active at onBegin. It would also fire immunity
+						// checks and battle messages, neither of which belongs in
+						// restoring a condition the Pokemon walked in with.
+						const status = this.dex.conditions.get(runState.status);
+						if (status.exists) {
+							pokemon.status = status.id;
+							pokemon.statusState = this.initEffectState({ id: status.id, target: pokemon });
+							if (status.id === 'slp' && runState.sleepTurns) {
+								pokemon.statusState.time = runState.sleepTurns;
+								pokemon.statusState.startTime = runState.sleepTurns;
+							}
+						}
+					}
+
+					const pp = runState.pp;
+					if (Array.isArray(pp)) {
+						for (const [index, slot] of pokemon.moveSlots.entries()) {
+							if (typeof pp[index] !== 'number') continue;
+							slot.pp = Math.max(0, Math.min(Math.floor(pp[index]), slot.maxpp));
+						}
+					}
+				}
+			}
+		},
+	},
 	endlessbattleclause: {
 		effectType: 'Rule',
 		name: 'Endless Battle Clause',
