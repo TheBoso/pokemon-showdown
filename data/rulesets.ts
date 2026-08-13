@@ -1077,6 +1077,13 @@ export const Rulesets: import('../sim/dex-formats').FormatDataTable = {
 					pokemon.hp = Math.max(0, Math.min(Math.floor(runState.hp), pokemon.maxhp));
 					if (!pokemon.hp) {
 						pokemon.fainted = true;
+						// `pokemonLeft` is counted from the team's length when the
+						// side is built, which is before this rule runs - so a
+						// Pokemon marked fainted here is still counted as
+						// available. Left uncorrected, a side that started with
+						// nothing standing is never recognised as beaten and the
+						// battle runs on with nothing left to hit.
+						if (side.pokemonLeft) side.pokemonLeft--;
 					} else if (runState.status) {
 						// Deliberately not `setStatus`: it refuses while nothing is
 						// active (`if (!this.isActive && status) return false`), and

@@ -171,6 +171,35 @@ export function trainerToTeam(trainer: TrainerData, mod: string): AdventureSet[]
 }
 
 /**
+ * A stand-in for the fourth seat of a multi battle.
+ *
+ * Showdown's only two-humans-a-side game type is `multi`, and multi will not
+ * begin until all four slots hold a team - it waits on `>player p4` forever,
+ * with no error and no timeout. So two players against a trainer who owns a
+ * single Pokemon still need *something* in p4.
+ *
+ * This is that something: one Pokemon that is already fainted. The slot
+ * exists, never acts, and never has to be answered for - the simulator passes
+ * for a side with nothing to send out - so the trainer fights both players
+ * alone. Which is the point: a double battle is a format, not a headcount, and
+ * two players against one trainer is still a double battle.
+ *
+ * An empty team is not an option; the simulator rejects it with "Battle not
+ * started: A player has an empty team."
+ */
+export function emptySlotTeam(trainer: TrainerData, mod: string): AdventureSet[] {
+	const [lead] = trainerToTeam(trainer, mod);
+	if (!lead) return [];
+	return [{
+		...lead,
+		// The Adventure Run State rule skips sets whose `maxhp` is 0, treating
+		// them as carrying no state - so this needs a non-zero maxhp for the
+		// hp of 0 to be applied and the Pokemon marked fainted.
+		runState: { uid: '', hp: 0, maxhp: 1, status: '', sleepTurns: 0, pp: [] },
+	}];
+}
+
+/**
  * Splits a trainer's roster across the two slots a multi battle gives their
  * side, alternating so the lead is preserved.
  *

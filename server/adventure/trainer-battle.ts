@@ -22,7 +22,7 @@ import { Utils } from '../../lib';
 import { PRNG } from '../../sim/prng';
 import { RoomBattle, type RoomBattleOptions } from '../room-battle';
 import { chooseAction, type AIRequest, type FoeView } from './trainer-ai';
-import { partyToTeam, splitTrainerTeam, trainerToTeam, type AdventureSet } from './teams';
+import { emptySlotTeam, partyToTeam, splitTrainerTeam, trainerToTeam, type AdventureSet } from './teams';
 import type { Campaign, TrainerData } from './campaigns';
 import type { AdventurePlayerState } from './state';
 
@@ -369,55 +369,49 @@ export class TrainerBattle extends RoomBattle {
 /**
  * Builds and starts a trainer battle in its own room.
  *
- * `trainers` is the opposing line-up: one trainer, or two fighting as a tag
- * pair. With one human it is a straight singles match against the first of
- * them; with two it is a multi battle where the pair share a side.
+ * One human is a straight singles match. Two is a multi battle - Showdown's
+ * only game type where two people share a side - with the pair on p1 and p3
+ * against the trainer on p2 and p4.
  *
  * **A multi battle cannot start until all four slots are seated.** The
  * simulator waits for `>player p4` and simply never begins without it, with no
- * error - so a two-player side must always face two filled slots. That is why
- * a lone trainer with a single Pokemon has to be paired up by the caller
- * rather than left to run a slot down.
+ * error and no timeout. A trainer carrying two or more Pokemon fills both
+ * slots themselves; one carrying a single Pokemon fills p4 with an
+ * already-fainted stand-in and fights both players alone. Two against one is
+ * still a double battle - the format is about the shape of the field, not the
+ * number of opponents.
  */
 export function createTrainerBattle(options: {
 	parent: Room,
 	campaign: Campaign,
-	trainers: TrainerData[],
+	trainer: TrainerData,
 	players: { player: AdventurePlayerState, user: User }[],
 	seed?: PRNGSeed,
 }): GameRoom | null {
-	const { campaign, parent } = options;
+	const { campaign, trainer, parent } = options;
 	const mod = campaign.mod;
 	const humans = options.players.slice(0, MAX_SIDE);
-	const trainers = options.trainers.slice(0, MAX_SIDE);
-	if (!humans.length || !trainers.length) return null;
+	if (!humans.length) return null;
 
 	const isMulti = humans.length > 1;
 	const format = isMulti ? campaign.manifest.multiBattleFormat : campaign.manifest.battleFormat;
 
-	const trainerTeam = trainerToTeam(trainers[0], mod);
+	const trainerTeam = trainerToTeam(trainer, mod);
 	if (!trainerTeam.length) return null;
 
-	// Slot layout: humans take p1 (and p3 in multi), the trainers p2 (and p4).
+	// Slot layout: humans take p1 (and p3 in multi), the trainer p2 (and p4).
 	const trainerSlots: TrainerSlot[] = [];
 	if (isMulti) {
-		if (trainers.length > 1) {
-			// Two trainers, a slot each - the tag battles Emerald actually has.
-			const partnerTeam = trainerToTeam(trainers[1], mod);
-			if (!partnerTeam.length) return null;
-			trainerSlots.push({ slot: 'p2', name: trainers[0].name, team: trainerTeam });
-			trainerSlots.push({ slot: 'p4', name: trainers[1].name, team: partnerTeam });
-		} else {
-			// One trainer holding both slots, their party dealt out alternately
-			// so their lead stays in front.
-			const [first, second] = splitTrainerTeam(trainerTeam);
-			// Refused rather than run a slot down: see the note above.
-			if (!second.length) return null;
-			trainerSlots.push({ slot: 'p2', name: trainers[0].name, team: first });
-			trainerSlots.push({ slot: 'p4', name: trainers[0].name, team: second });
-		}
+		// Their party dealt out alternately, so their lead stays in front.
+		const [first, second] = splitTrainerTeam(trainerTeam);
+		trainerSlots.push({ slot: 'p2', name: trainer.name, team: first });
+		trainerSlots.push({
+			slot: 'p4',
+			name: trainer.name,
+			team: second.length ? second : emptySlotTeam(trainer, mod),
+		});
 	} else {
-		trainerSlots.push({ slot: 'p2', name: trainers[0].name, team: trainerTeam });
+		trainerSlots.push({ slot: 'p2', name: trainer.name, team: trainerTeam });
 	}
 
 	// `players` is positional: index 0 is p1, 1 is p2, and so on. Holes become
@@ -430,7 +424,7 @@ export function createTrainerBattle(options: {
 	const playerSides = new Map<number, string>([[0, humans[0].player.token]]);
 	if (isMulti) playerSides.set(2, humans[1].player.token);
 
-	const title = trainers.map(entry => `${entry.trainerClass} ${entry.name}`).join(' & ');
+	const title = `${trainer.trainerClass} ${trainer.name}`;
 	const roomid = Rooms.global.prepBattleRoom(format);
 
 	const battleOptions: RoomBattleOptions = {
@@ -458,10 +452,7 @@ export function createTrainerBattle(options: {
 		parent,
 		title,
 		mod,
-		// One AI personality drives both slots. Pairing two trainers is our
-		// arrangement, not Emerald's, so there is no second script to honour -
-		// and the lead's flags are the ones the player is meant to read.
-		flags: trainers[0].ai,
+		flags: trainer.ai,
 		seed: options.seed,
 	});
 	battle.playerSides = playerSides;
@@ -476,8 +467,7 @@ export function createTrainerBattle(options: {
 
 	// `RoomBattle#start` names the room before the trainer has a name, so it
 	// comes out as "vs. Player 2". Correct it now that the slots are filled.
-	room.title = `${humans.map(entry => entry.player.name).join(' & ')} vs. ` +
-		`${trainers.map(entry => entry.name).join(' & ')}`;
+	room.title = `${humans.map(entry => entry.player.name).join(' & ')} vs. ${trainer.name}`;
 	room.send(`|title|${room.title}`);
 
 	room.add(
