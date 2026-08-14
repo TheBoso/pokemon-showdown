@@ -566,12 +566,18 @@
 		"kind": "cave",
 		"connections": ["evergrande", "pokemonleague"],
 		"encounters": "victoryroad",
-		"requires": ["badge:rain"]
+		"requires": [
+			"badge:stone", "badge:knuckle", "badge:dynamo", "badge:heat",
+			"badge:balance", "badge:feather", "badge:mind", "badge:rain"
+		],
+		"notes": "All eight, as the gate guards ask for. Requiring only the last badge would have let a party walk in having skipped half of Hoenn, because the map does not force every gym on the way past."
 	},
 	"pokemonleague": {
 		"name": "Pokemon League",
 		"kind": "building",
 		"connections": ["victoryroad"],
-		"notes": "The gauntlet with no Pokemon Centre between fights. Its trainers come from trainers.json like everywhere else - the Elite Four each have their own map in the ROM, collapsed to this one location."
+		"champion": "wallace",
+		"trainers": ["sidney", "phoebe", "glacia", "drake", "wallace"],
+		"notes": "The gauntlet with no Pokemon Centre between fights. The Elite Four each have their own map in the ROM, collapsed to this one location - and the generated order comes out backwards, which would have put Wallace first and ended the run the moment anyone walked in. Hence the explicit order: Wallace is last, and beating him is the only way to win."
 	}
 }

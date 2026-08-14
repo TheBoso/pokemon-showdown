@@ -531,6 +531,12 @@ export function controls(
 	const roomid = state.roomid;
 
 	if (state.phase === 'ended') {
+		// A finished run and an abandoned one are both `ended`, and there is no
+		// flag on the state saying which. There does not need to be: the
+		// Champion being on the beaten list is the fact itself, and reading it
+		// back beats migrating every save for a boolean.
+		const won = state.defeatedTrainers.some(id => campaign.isChampion(state.location, id));
+		if (won) return victoryReport(state, campaign);
 		return `<div style="text-align:center;padding:12px;color:#888">This adventure has ended.</div>`;
 	}
 
@@ -587,6 +593,43 @@ export function controls(
 	buf += searchControls(state.roomid, actions.search);
 	buf += bagControls(state, campaign, player, actions.busy);
 	buf += `</div>`;
+	return buf;
+}
+
+/**
+ * The end of a run that was actually finished.
+ *
+ * Posted to the room log rather than the panel, because the panel repaints and
+ * this should not: a run that took hours deserves to still be there when
+ * somebody scrolls back.
+ */
+export function victoryReport(state: AdventureState, campaign: Campaign): string {
+	const players = state.playerOrder.map(token => state.players[token]).filter(Boolean);
+	const hours = Math.max(1, Math.round((Date.now() - state.createdAt) / 3600000));
+	const caught = players.reduce((total, player) => total + player.party.length + player.box.length, 0);
+
+	let buf = `<div class="broadcast-green" style="padding:8px">`;
+	buf += Utils.html`<h2 style="margin:2px 0">${campaign.name} — Champion!</h2>`;
+	buf += `<p style="margin:4px 0">`;
+	buf += players.length > 1 ?
+		Utils.html`${players.map(player => player.name).join(' and ')} beat the Elite Four and the Champion together.` :
+		Utils.html`${players[0]?.name || 'The party'} beat the Elite Four and the Champion.`;
+	buf += `</p>`;
+
+	buf += `<p style="margin:4px 0;font-size:9pt">` +
+		`${state.progress.badges.length}/8 badges &middot; ` +
+		`${state.visited.length} places &middot; ` +
+		`${state.defeatedTrainers.length} trainers beaten &middot; ` +
+		`${caught} Pokemon &middot; ` +
+		`about ${hours} hour${hours === 1 ? '' : 's'}</p>`;
+
+	buf += `<table style="margin:6px 0">`;
+	for (const player of players) {
+		buf += Utils.html`<tr><td style="vertical-align:top;padding:2px 12px 2px 0;white-space:nowrap">` +
+			Utils.html`<strong>${player.name}</strong></td>`;
+		buf += `<td style="padding:2px 0">${partyView(player)}</td></tr>`;
+	}
+	buf += `</table></div>`;
 	return buf;
 }
 

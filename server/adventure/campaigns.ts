@@ -146,6 +146,14 @@ export interface LocationData {
 	/** Badge awarded by this location's gym. */
 	badge?: string;
 	/**
+	 * The trainer who ends the run.
+	 *
+	 * Beating them is the only way to *win*; everything else that sets the
+	 * phase to `ended` is an abandonment. Named the same way as `gym`, by the
+	 * trainer's base id.
+	 */
+	champion?: string;
+	/**
 	 * Gate on challenging the gym, separate from entering the town.
 	 * Petalburg is the reason this exists: you walk through it in the first
 	 * ten minutes but cannot fight Norman until you hold four badges.
@@ -586,9 +594,17 @@ export class Campaign {
 	 * `tateandliza` and its leader is `tate_and_liza_1`.
 	 */
 	isGymLeader(locationId: string, trainerId: string): boolean {
-		const gym = this.location(locationId)?.gym;
-		if (!gym) return false;
-		return toID(trainerId).replace(/\d+$/, '') === toID(gym);
+		return this.matchesLeader(this.location(locationId)?.gym, trainerId);
+	}
+
+	/** Is this the trainer whose defeat wins the run? */
+	isChampion(locationId: string, trainerId: string): boolean {
+		return this.matchesLeader(this.location(locationId)?.champion, trainerId);
+	}
+
+	private matchesLeader(key: string | undefined, trainerId: string): boolean {
+		if (!key) return false;
+		return toID(trainerId).replace(/\d+$/, '') === toID(key);
 	}
 
 	trainersAt(locationId: string): { id: string, trainer: TrainerData }[] {

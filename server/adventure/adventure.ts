@@ -36,7 +36,7 @@ import { PRNG } from '../../sim/prng';
 import { RoomGame, RoomGamePlayer } from '../room-game';
 import { getCampaign, type Campaign, type Requirement, type TrainerData } from './campaigns';
 import { allAdventures, deleteAdventure, saveAdventure } from './storage';
-import { panel, type ViewerContext } from './render';
+import { panel, victoryReport, type ViewerContext } from './render';
 import { describeAll, grant, meetsAll, meetsRequirement, unmet } from './progress';
 import {
 	createTrainerBattle, type BattleSideState, type BattleStateReport, type TrainerBattle,
@@ -857,6 +857,14 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 				);
 			}
 			this.awardProgress(trainerIds);
+
+			// The Champion is the end of the road. Nothing after this - no
+			// travel vote, no next trainer - so it returns rather than falling
+			// through to reopening the ballot.
+			if (trainerIds.some(id => this.campaign.isChampion(this.state.location, id))) {
+				this.winRun();
+				return;
+			}
 		} else {
 			this.applyDefeat(battlers);
 		}
@@ -1589,6 +1597,31 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 
 		this.save();
 		this.openTravelVote();
+	}
+
+	/**
+	 * The Champion is beaten. That is the run finished, and won.
+	 *
+	 * Deliberately not `end()`. That one is for abandoning a run: it deletes
+	 * the save and tears the room down. A finished run is worth keeping - the
+	 * room stays up with the final panel on it, and the save survives a restart
+	 * so the result is still there tomorrow. The host can still `/adventure
+	 * end` to clear it away.
+	 */
+	private winRun(): void {
+		this.vote?.destroy();
+		this.vote = null;
+		this.state.phase = 'ended';
+		this.battleRoomid = null;
+		this.battleTrainerIds = [];
+		this.battlePlayers = [];
+		this.save();
+
+		this.room.add(`|html|${victoryReport(this.state, this.campaign)}`);
+		this.room.add(`|allowleave|`).update();
+
+		this.setEnded();
+		this.update();
 	}
 
 	end(user: User | null, reason = ''): void {
