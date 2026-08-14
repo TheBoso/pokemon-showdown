@@ -501,6 +501,33 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		return partner ? [lead, partner] : [lead];
 	}
 
+	/** Players who are off in a wild encounter of their own right now. */
+	wildEncounterPlayers(): AdventurePlayerState[] {
+		return [...this.wildBattles.keys()]
+			.map(token => this.state.players[token])
+			.filter(Boolean);
+	}
+
+	/**
+	 * Why the party cannot leave, if it cannot.
+	 *
+	 * Wild encounters are personal and unsynced, but the *map* is shared - the
+	 * party stands in one place. So searching holds the group where it is until
+	 * everyone is done: walking off mid-encounter would either strand a player
+	 * fighting somewhere the party has left, or land their result on a party
+	 * that has already moved and healed.
+	 */
+	travelBlockedBy(): string | undefined {
+		const busy = this.wildEncounterPlayers();
+		if (!busy.length) return undefined;
+
+		const names = busy.map(player => player.name);
+		const who = names.length > 1 ?
+			`${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` :
+			names[0];
+		return `${who} ${names.length > 1 ? 'are' : 'is'} still in a wild encounter`;
+	}
+
 	travelOptions(): VoteOption[] {
 		const options: VoteOption[] = [];
 		const here = this.here;
@@ -509,6 +536,8 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		// bar the road either - otherwise a wiped party on a route with no way
 		// back would have no legal move at all.
 		const canFight = !!this.electBattlers(1).length;
+		// Nobody goes anywhere while somebody is still in a wild encounter.
+		const waiting = this.travelBlockedBy();
 
 		// The gauntlet comes first: while anyone is left standing, fighting them
 		// is the only way forward.
@@ -524,7 +553,9 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 				detail: lineup.length > 1 ?
 					`together - ${remaining.length} left here` :
 					(remaining.length > 1 ? `${remaining.length} trainers left here` : `last one here`),
-				locked: canFight ? undefined : `nobody has a Pokemon left`,
+				// `canFight` already excludes anyone mid-encounter, so say which
+				// it is rather than claiming the party has nothing left to send.
+				locked: canFight ? undefined : (waiting || `nobody has a Pokemon left`),
 			});
 		}
 
@@ -534,6 +565,9 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 				id: HEAL_OPTION,
 				label: `Pokemon Centre`,
 				detail: hurt ? `heal ${hurt} part${hurt === 1 ? 'y' : 'ies'}` : `everyone is already healthy`,
+				// Healing a party that is currently in a battle would be undone
+				// the moment that battle wrote its result back.
+				locked: waiting,
 			});
 		}
 
@@ -549,6 +583,10 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 				locked = `needs ${describeAll(missing)}`;
 			} else if (blockedByTrainers) {
 				locked = remaining.length === 1 ? `1 trainer still here` : `${remaining.length} trainers still here`;
+			} else if (waiting) {
+				// Every road, including the way back: the party is one group and
+				// it does not walk off while a member is mid-fight.
+				locked = waiting;
 			}
 
 			options.push({
@@ -576,11 +614,16 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 
 		const options = this.travelOptions();
 		if (!options.some(option => !option.locked)) {
-			// Every road out is shut. Possible if a campaign gates badly; say so
-			// rather than opening a vote nobody can answer.
+			// Nothing is open. Usually that means the party is waiting on a wild
+			// encounter, which resolves itself - `finishWildBattle` reopens the
+			// ballot. A campaign that gates badly is the other possibility, and
+			// that one is worth shouting about.
 			this.vote = null;
+			const waiting = this.travelBlockedBy();
 			this.room.add(
-				`|html|<div class="broadcast-red">There is nowhere to go from here that the party can reach.</div>`
+				waiting ?
+					Utils.html`|html|<div class="infobox">The party waits - ${waiting}.</div>` :
+					`|html|<div class="broadcast-red">There is nowhere to go from here that the party can reach.</div>`
 			).update();
 			this.update();
 			return;
@@ -618,6 +661,15 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		this.vote = null;
 		if (this.ended) return;
 
+		// A ballot's options are a snapshot from when it opened, so somebody may
+		// have walked into a wild encounter since. Fighting a trainer is still
+		// fine - whoever is busy was left out of the election - but the party
+		// does not move or heal until everyone is back.
+		if (!result.winner.id.startsWith(FIGHT_PREFIX) && this.travelBlockedBy()) {
+			this.openTravelVote();
+			return;
+		}
+
 		if (result.tied) {
 			this.room.add(Utils.html`|html|<div class="infobox">The vote tied - ${result.winner.label} it is.</div>`);
 		}
@@ -648,6 +700,10 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 		return this.state.playerOrder
 			.map(token => this.state.players[token])
 			.filter(player => player?.party.some(pokemon => pokemon.hp > 0))
+			// Somebody mid wild encounter has already committed their party to a
+			// battle. Electing them into a second one would leave two battles
+			// writing results back onto the same Pokemon by position.
+			.filter(player => !this.isBattling(player.token))
 			.sort((a, b) => (a.battlesFought - b.battlesFought) || (a.lastBattleAt - b.lastBattleAt))
 			.slice(0, limit);
 	}
@@ -977,9 +1033,12 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	 * Wild encounters
 	 *
 	 * Deliberately outside the phase machine. Searching is a personal act on a
-	 * personal button, several players can be mid-encounter at once, and the
-	 * group's vote carries on regardless - so none of this touches `phase` or
-	 * `vote`. That is the whole point of "not synced".
+	 * personal button and several players can be mid-encounter at once, so none
+	 * of this touches `phase`. That is the point of "not synced".
+	 *
+	 * The map is the exception, because the map is shared. The party stands in
+	 * one place, so it waits where it is until everyone is out of their own
+	 * fight - see `travelBlockedBy`.
 	 * -------------------------------------------------------------- */
 
 	/** The search buttons one player should see here, and why any are shut. */
@@ -1055,6 +1114,9 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 			`<a href="/${battle.roomid}">Watch</a></div>`
 		);
 		this.save();
+		// The roads just shut. A ballot's options are fixed when it opens, so it
+		// has to be reopened for the locks to appear on it.
+		if (this.vote) this.openTravelVote();
 		this.update();
 	}
 
@@ -1100,6 +1162,15 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 
 		if (isEveryoneWiped(this.state)) {
 			this.whiteOut();
+			return;
+		}
+
+		// The last encounter ending is what lets the party move again. Reopen
+		// the ballot so the roads come back - and because the ballot may have
+		// closed entirely while everything on it was locked, this has to run
+		// whether or not a vote is currently up.
+		if (!this.wildBattles.size && !this.battleRoomid && !['lobby', 'ended'].includes(this.state.phase)) {
+			this.openTravelVote();
 			return;
 		}
 		this.update();
