@@ -58,7 +58,8 @@
 		"gym": "norman",
 		"badge": "balance",
 		"gymRequires": ["badge:stone", "badge:knuckle", "badge:dynamo", "badge:heat"],
-		"notes": "You pass through in the first hour; Norman refuses you until four badges."
+		"rewards": ["hm:surf"],
+		"notes": "You pass through in the first hour; Norman refuses you until four badges. Surf comes from Wally's father once Norman is beaten, which is what opens the water routes."
 	},
 	"route104south": {
 		"name": "Route 104 (South)",
@@ -79,7 +80,9 @@
 		"name": "Petalburg Woods",
 		"kind": "forest",
 		"connections": ["route104south", "route104north"],
-		"encounters": "petalburgwoods"
+		"encounters": "petalburgwoods",
+		"rewards": ["flag:briney_rescued"],
+		"notes": "Driving Team Aqua out of the woods rescues Peeko, which is what gets Mr Briney to sail you to Dewford."
 	},
 	"route104north": {
 		"name": "Route 104 (North)",
@@ -201,7 +204,9 @@
 		"pokecenter": true,
 		"pokemart": ["superpotion", "greatball", "revive", "repel", "paralyzeheal"],
 		"gym": "wattson",
-		"badge": "dynamo"
+		"badge": "dynamo",
+		"rewards": ["hm:mach_bike"],
+		"notes": "Rydel's shop is here, and the Mach Bike is the only way up the Sky Pillar. Filed as an hm: because that is the token the map already uses for it; it is a bike, not an HM."
 	},
 
 	"route117": {
@@ -237,7 +242,7 @@
 			"fierypath",
 			{ "to": "route113", "requires": ["flag:magma_route112_cleared"] },
 			{ "to": "lavaridge", "requires": ["flag:magma_route112_cleared"] },
-			{ "to": "mtchimney", "requires": ["flag:magma_route112_cleared"], "notes": "The cable car station is past the grunts." },
+			{ "to": "mtchimney", "notes": "The cable car up. Deliberately ungated: this is the road you take *to* fight Team Magma, and gating it on having already beaten them made Mt. Chimney unreachable - the only other way in is Jagged Pass, which is gated on the same fight." },
 			"jaggedpass"
 		],
 		"encounters": "route112",
@@ -262,7 +267,9 @@
 		"kind": "cave",
 		"connections": ["jaggedpass"],
 		"encounters": "magmahideout",
-		"requires": ["item:magmaemblem"]
+		"requires": ["item:magmaemblem"],
+		"rewards": ["flag:magma_hideout_cleared"],
+		"notes": "Breaking up Magma here is what sends the run on to the Aqua Hideout."
 	},
 	"lavaridge": {
 		"name": "Lavaridge Town",
@@ -271,7 +278,9 @@
 		"pokecenter": true,
 		"pokemart": ["superpotion", "greatball", "burnheal", "revive"],
 		"gym": "flannery",
-		"badge": "heat"
+		"badge": "heat",
+		"rewards": ["item:gogoggles"],
+		"notes": "The Go-Goggles turn up here, and they are what makes the Route 111 desert crossable."
 	},
 	"mtchimney": {
 		"name": "Mt. Chimney",
@@ -281,7 +290,8 @@
 			"jaggedpass"
 		],
 		"encounters": "mtchimney",
-		"notes": "Reached by the cable car from Route 112; the way onward is down Jagged Pass."
+		"rewards": ["flag:magma_route112_cleared", "flag:mt_chimney_cleared"],
+		"notes": "Reached by the cable car from Route 112; the way onward is down Jagged Pass. Two flags for one fight, because the map gates two different things on it: Route 112's remaining roads, and the descent into Jagged Pass."
 	},
 	"route113": {
 		"name": "Route 113",
@@ -344,7 +354,9 @@
 		"pokecenter": true,
 		"pokemart": ["superpotion", "hyperpotion", "ultraball", "revive"],
 		"gym": "winona",
-		"badge": "feather"
+		"badge": "feather",
+		"rewards": ["item:devonscope"],
+		"notes": "Steven hands over the Devon Scope on the way out to Route 120, where the Kecleon is."
 	},
 	"route120": {
 		"name": "Route 120",
@@ -380,7 +392,9 @@
 		"name": "Mt. Pyre",
 		"kind": "cave",
 		"connections": ["route122"],
-		"encounters": "mtpyre"
+		"encounters": "mtpyre",
+		"rewards": ["item:magmaemblem"],
+		"notes": "The Magma Emblem is picked up on the summit, and it is what opens the Magma Hideout off Jagged Pass."
 	},
 
 	"lilycove": {
@@ -411,7 +425,9 @@
 		"pokecenter": true,
 		"pokemart": ["hyperpotion", "ultraball", "revive", "fullheal"],
 		"gym": "tateandliza",
-		"badge": "mind"
+		"badge": "mind",
+		"rewards": ["hm:dive"],
+		"notes": "Steven hands over Dive here once the gym is done, which is the only way down to Sootopolis."
 	},
 	"route125": {
 		"name": "Route 125",
@@ -506,7 +522,9 @@
 		"kind": "cave",
 		"connections": ["route131"],
 		"encounters": "skypillar",
-		"requires": ["hm:mach_bike"]
+		"requires": ["hm:mach_bike"],
+		"rewards": ["flag:kyogre_groudon_stopped"],
+		"notes": "Waking Rayquaza at the top is what settles Kyogre and Groudon, and only then will Juan take a challenge in Sootopolis."
 	},
 	"pacifidlog": {
 		"name": "Pacifidlog Town",

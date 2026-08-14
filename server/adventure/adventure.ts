@@ -34,10 +34,10 @@
 import { Utils } from '../../lib';
 import { PRNG } from '../../sim/prng';
 import { RoomGame, RoomGamePlayer } from '../room-game';
-import { getCampaign, type Campaign, type TrainerData } from './campaigns';
+import { getCampaign, type Campaign, type Requirement, type TrainerData } from './campaigns';
 import { allAdventures, deleteAdventure, saveAdventure } from './storage';
 import { panel, type ViewerContext } from './render';
-import { describeAll, meetsAll, unmet } from './progress';
+import { describeAll, grant, meetsAll, meetsRequirement, unmet } from './progress';
 import {
 	createTrainerBattle, type BattleSideState, type BattleStateReport, type TrainerBattle,
 } from './trainer-battle';
@@ -475,10 +475,22 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 	 * you cannot take yet, and why, is how a player learns the map; hiding it
 	 * just makes the world feel arbitrarily small.
 	 */
-	/** Trainers at the current location who have not been beaten yet. */
+	/**
+	 * Trainers at the current location who have not been beaten yet.
+	 *
+	 * A gym leader the party is not yet entitled to challenge is left out
+	 * entirely rather than shown locked. Petalburg is why: you walk through it
+	 * in the first ten minutes and cannot fight Norman until you hold four
+	 * badges, so counting him as "remaining" would bar every road out of the
+	 * town and strand the run before it started.
+	 */
 	remainingTrainers(): { id: string, trainer: TrainerData }[] {
+		const here = this.here;
+		const gymShut = here?.gymRequires?.length && !meetsAll(this.state.progress, here.gymRequires);
+
 		return this.campaign.trainersAt(this.state.location)
-			.filter(entry => !this.state.defeatedTrainers.includes(entry.id));
+			.filter(entry => !this.state.defeatedTrainers.includes(entry.id))
+			.filter(entry => !(gymShut && this.campaign.isGymLeader(this.state.location, entry.id)));
 	}
 
 	/**
@@ -844,6 +856,7 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 					`${beaten.length > 1 ? 'were' : 'was'} defeated!</div>`
 				);
 			}
+			this.awardProgress(trainerIds);
 		} else {
 			this.applyDefeat(battlers);
 		}
@@ -859,6 +872,47 @@ export class Adventure extends RoomGame<AdventurePlayer> {
 			return;
 		}
 		this.openTravelVote();
+	}
+
+	/**
+	 * Hands out whatever beating these trainers has earned the party.
+	 *
+	 * Two sources, and they are deliberately different. A **badge** comes from
+	 * the gym leader personally - clearing the rest of the town does not earn
+	 * it. A location's **rewards** come from clearing the place out: Peeko is
+	 * rescued once Petalburg Woods is empty of Team Aqua, Mt Chimney opens once
+	 * Magma has been driven off it.
+	 *
+	 * Progress is held by the group rather than by whoever swung, because
+	 * everyone travels together and a gate cannot open for one player and not
+	 * another.
+	 */
+	private awardProgress(trainerIds: string[]): void {
+		const here = this.here;
+		if (!here) return;
+		const earned: Requirement[] = [];
+
+		if (here.badge) {
+			for (const trainerId of trainerIds) {
+				if (!this.campaign.isGymLeader(this.state.location, trainerId)) continue;
+				earned.push(`badge:${here.badge}`);
+			}
+		}
+
+		// Checked after this battle's results are recorded, so the last trainer
+		// on the list counts towards clearing it.
+		if (here.rewards?.length && !this.remainingTrainers().length) {
+			earned.push(...here.rewards);
+		}
+
+		const granted = earned.filter(requirement => !meetsRequirement(this.state.progress, requirement));
+		if (!granted.length) return;
+
+		for (const requirement of granted) grant(this.state.progress, requirement);
+		this.room.add(
+			Utils.html`|html|<div class="broadcast-green">The party earned ` +
+			Utils.html`${describeAll(granted)}!</div>`
+		);
 	}
 
 	/**

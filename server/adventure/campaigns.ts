@@ -152,6 +152,15 @@ export interface LocationData {
 	 */
 	gymRequires?: Requirement[];
 	requires?: Requirement[];
+	/**
+	 * Granted once every trainer here has been beaten.
+	 *
+	 * This is how the story items and flags that gate the map get handed out:
+	 * clearing Petalburg Woods rescues Peeko, clearing Mt Chimney puts Team
+	 * Magma to flight. A gym's badge is *not* listed here - that comes from
+	 * beating the leader specifically, not from clearing the whole town.
+	 */
+	rewards?: Requirement[];
 	/** Author's note; ignored by the engine. */
 	notes?: string;
 }
@@ -257,6 +266,59 @@ export function validateLocations(locations: LocationMap, startLocation: string)
 	for (const id of ids) {
 		if (!reachable.has(id)) {
 			problems.push({ location: id, problem: `unreachable from ${startLocation}` });
+		}
+	}
+
+	/*
+	 * A second pass, this time honouring the gates and handing out what each
+	 * place grants once it is reached.
+	 *
+	 * The walk above only proves the roads join up. This proves the run can be
+	 * *finished*: that no gate has its key sitting on the far side of itself.
+	 * That mistake is invisible by eye on a map this size - Route 112 asks for
+	 * a flag earned at the top of Mt Chimney, which is only wrong if there is
+	 * no other way up - and it would strand a real run hours in.
+	 */
+	const held = new Set<string>();
+	const opened = new Set<string>([startLocation]);
+	for (let grew = true; grew;) {
+		grew = false;
+		for (const id of opened) {
+			const place = locations[id];
+			if (place.badge) held.add(`badge:${place.badge}`);
+			for (const requirement of place.rewards || []) held.add(requirement);
+		}
+		for (const id of [...opened]) {
+			for (const edge of exitsOf(locations[id])) {
+				if (!ids.has(edge.to) || opened.has(edge.to)) continue;
+				// Both gates, exactly as `Campaign#exits` applies them: entering
+				// a place can be barred by the road and by the place itself.
+				const needed = [...edge.requires || [], ...locations[edge.to].requires || []];
+				if (!needed.every(requirement => held.has(requirement))) continue;
+				opened.add(edge.to);
+				grew = true;
+			}
+		}
+	}
+	for (const id of ids) {
+		if (reachable.has(id) && !opened.has(id)) {
+			problems.push({
+				location: id,
+				problem: `the roads reach it but the run cannot: gated behind something nothing grants`,
+			});
+		}
+	}
+
+	// A gym nobody can challenge is a badge nobody can earn, which usually
+	// takes the rest of the run down with it - so it is worth naming outright
+	// rather than leaving it to show up as an unreachable place later.
+	for (const [id, location] of Object.entries(locations)) {
+		for (const requirement of location.gymRequires || []) {
+			if (held.has(requirement)) continue;
+			problems.push({
+				location: id,
+				problem: `its gym asks for "${requirement}", which nothing grants`,
+			});
 		}
 	}
 
@@ -514,6 +576,21 @@ export class Campaign {
 	 * A location's own `trainers` array overrides the generated index, so a
 	 * campaign can hand-order a gauntlet where the ROM's order reads badly.
 	 */
+	/**
+	 * Is this trainer the leader of this location's gym?
+	 *
+	 * `gym` names the leader while the roster is keyed by the specific team -
+	 * `norman_1`, with `_2` upward being the post-game rematches - so the
+	 * trailing number comes off before comparing. Both sides go through `toID`
+	 * because the two spellings do not otherwise meet: Mossdeep's gym is
+	 * `tateandliza` and its leader is `tate_and_liza_1`.
+	 */
+	isGymLeader(locationId: string, trainerId: string): boolean {
+		const gym = this.location(locationId)?.gym;
+		if (!gym) return false;
+		return toID(trainerId).replace(/\d+$/, '') === toID(gym);
+	}
+
 	trainersAt(locationId: string): { id: string, trainer: TrainerData }[] {
 		const override = this.location(locationId)?.trainers;
 		const ids = override || this.trainerFile()?.byLocation?.[locationId] || [];
